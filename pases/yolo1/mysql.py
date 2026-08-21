@@ -1,7 +1,7 @@
 import pymysql
 
 from pymysql.cursors import DictCursor
-from mainyolo1 import delete_local_img
+
 
 
 
@@ -598,6 +598,7 @@ def add_knowledge(form_data):
 
 # 单删
 def del_knowledge(del_id):
+    from mainyolo1 import delete_local_img
     sql = "DELETE FROM disease_knowledge WHERE id=%s"
     sql1 = "SELECT example_url FROM disease_knowledge WHERE id=%s"
     with pymysql.connect(**db_config) as conn:
@@ -605,6 +606,7 @@ def del_knowledge(del_id):
             cur.execute(sql1, (del_id,))
             res = cur.fetchone()
             if res and res.get("example_url"):
+                
                 delete_local_img(res["example_url"])
                 # 第二步：删除数据库记录
             cur.execute(sql, (del_id,))
@@ -614,6 +616,7 @@ def del_knowledge(del_id):
 
 # 多条删除
 def del_choose_knowledge(id_list):
+    
     place = ",".join(["%s"] * len(id_list))
     sql = f"DELETE FROM disease_knowledge WHERE id IN ({place})"
     sql1 = f"SELECT example_url FROM disease_knowledge WHERE id IN ({place})"
@@ -624,6 +627,7 @@ def del_choose_knowledge(id_list):
             for item in img_list:
                 url = item.get("example_url")
                 if url:
+                    from mainyolo1 import delete_local_img
                     delete_local_img(url)
             cur.execute(sql, id_list)
             conn.commit()
@@ -705,36 +709,69 @@ def userdel(user_id):
     return {"code":200,"msg":"删除成功"}
 
 
+# 根据病虫害名称查询知识库，返回 {id, disease_type, symptom, treatment} 或 None
+def get_disease_by_name(disease_name: str):
+    sql = "SELECT id, disease_type, symptom, treatment FROM disease_knowledge WHERE disease_name = %s"
+    return query_one(sql, (disease_name,))
+
+
+# 批量查询病虫害治理方法，返回 {disease_name: {symptom, treatment}}
+def get_disease_treatments(disease_names: list):
+    if not disease_names:
+        return {}
+    sql = """
+        SELECT disease_name, symptom, treatment
+        FROM disease_knowledge
+        WHERE disease_name IN (%s)
+    """
+    results = query(sql, (tuple(disease_names),))
+    return {r['disease_name']: r for r in results}
+
+
 # 模型检测完后的信息存放入数据库中
+# detect_result_list: [{"name": "叶霉病", "confidence": 0.95}, ...]
 def model_add(image_url: str, user_id: int, detect_result_list: list):
     try:
-        with pymysql.connect(**db_config) as conn:
-            # 开启事务
-            conn.begin()
-            with conn.cursor() as cur:
-                # 1.插入主表 detect_record
-                sql_record = """
-                             INSERT INTO detect_record (image_url, detect_time, user_id, update_time)
-                             VALUES (%s, NOW(), %s, NOW()) \
-                             """
-                cur.execute(sql_record, (image_url, user_id))
-                record_id = cur.lastrowid
+        conn = pymysql.connect(**db_config)
+        conn.begin()
+        with conn.cursor() as cur:
+            # 1. 插入主表 detect_record
+            cur.execute(
+                "INSERT INTO detect_record (image_url, detect_time, user_id, update_time) "
+                "VALUES (%s, NOW(), %s, NOW())",
+                (image_url, user_id)
+            )
+            record_id = cur.lastrowid
 
-                # 2.批量插入子表 record_item，自动从知识库拿名称、类型
-                sql_item = """
-                           INSERT INTO record_item (
-                               record_id, disease_id, disease_name, confidence,
-                               item_audit_status, final_disease_id, final_result, disease_type, update_time
-                           )
-                           SELECT %s, id, disease_name, %s, 2, id, disease_name, disease_type, NOW()
-                           FROM disease_knowledge WHERE id = %s \
-                           """
-                for disease_id, confidence in detect_result_list:
-                    cur.execute(sql_item, (record_id, confidence, disease_id))
+            # 2. 逐条插入子表 detect_record_item
+            for item in detect_result_list:
+                name = item["name"]
+                confidence = item["confidence"]
 
-            conn.commit()
-            return True, record_id
+                # 查知识库获取 disease_id 和 disease_type
+                cur.execute(
+                    "SELECT id, disease_type FROM disease_knowledge WHERE disease_name = %s",
+                    (name,)
+                )
+                row = cur.fetchone()
+                disease_id = row[0] if row else None
+                disease_type = row[1] if row else 0
+
+                cur.execute(
+                    "INSERT INTO detect_record_item "
+                    "(record_id, disease_id, disease_name, confidence, "
+                    "item_audit_status, final_disease_id, final_result, "
+                    "disease_type, update_time) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+                    (record_id, disease_id, name, confidence,
+                     0, disease_id, name, disease_type)
+                )
+
+        conn.commit()
+        return True, record_id
     except Exception as e:
-        # 异常自动回滚
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return False, f"入库异常：{str(e)}"

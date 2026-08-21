@@ -37,12 +37,26 @@ def clean_folder_by_time(folder_path: str, keep_days: int = 7):
 
 
 # ---------------------- 定时任务配置区 ----------------------
+def _resolve_paths():
+    """
+    动态解析上传 / 结果图目录，与 mainyolo1.py 保持一致
+    避免硬编码相对路径出错（upload_demo → upload-demo 中划线问题等）
+    """
+    import os
+    script_dir = os.path.dirname(os.path.abspath(__file__))   # .../pases/yolo1
+    project_root = os.path.dirname(os.path.dirname(script_dir))  # .../demo
+    upload_dir = os.path.join(project_root, "pases", "upload-demo", "static", "upload")
+    result_dir = os.path.join(script_dir, "record", "img")
+    return upload_dir, result_dir
+
+
 def clean_job():
     """定时执行的清理任务，按需修改文件夹与保留天数"""
-    # 1.临时预览图：images/tmp 只保留1天
-    clean_folder_by_time("../pases/upload_demo/static/upload", keep_days=1)
+    upload_dir, result_dir = _resolve_paths()
+    # 1.临时预览图：upload 只保留1天
+    clean_folder_by_time(upload_dir, keep_days=1)
     # 2.历史存档图：record/img 保留30天
-    clean_folder_by_time("record/img", keep_days=30)
+    clean_folder_by_time(result_dir, keep_days=30)
     # 可继续添加其他文件夹
     # clean_folder_by_time("你的文件夹路径", 保留天数)
 

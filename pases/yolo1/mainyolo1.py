@@ -1,5 +1,10 @@
 import os
-from flask import Flask, request, jsonify, send_from_directory
+import io
+import base64
+import random
+import string
+import time
+from flask import Flask, request, jsonify, send_from_directory,Response
 from flask_cors import CORS
 from flask_jwt_extended import (
     JWTManager,
@@ -11,14 +16,45 @@ from flask_jwt_extended import (
 )
 from datetime import datetime
 from werkzeug.utils import secure_filename
-from pases.yolo1.modelyolo1 import YOLO1
 from mysql import *
 from clear_by_time import start_clean_timer
+from modelyolo1 import *
+
+import modelyolo1 as _m1
+from ptz_control import PTZController
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 允许上传最大 500MB 模型文件
 CORS(app)
 jwt = JWTManager(app)
-detector = YOLO1()
+
+# 启动时从 model_config.json 读取上一次保存的模型路径 + 阈值
+load_model_config()
+# 如果配置文件里有模型路径就用它，否则用 DEFAULT 默认权重
+detector = YOLO1(weights_path=current_model_path or DEFAULT, conf_thres=conf_thres, iou_thres=iou_thres)
+
+# RTSP 实时检测线程对象（None 表示未开启）
+_rtsp_thread = None
+
+# PTZ 云台控制器（懒加载，首次调用接口时才连接摄像头）
+_ptz = None
+# 摄像头 ONVIF 认证信息（与 RTSP 一致）
+_PTZ_IP = "192.168.1.79"
+_PTZ_USER = "admin"
+_PTZ_PASS = "L2801724"
+
+def _get_ptz():
+    """懒加载 PTZ 控制器，连接失败返回 None"""
+    global _ptz
+    if _ptz is None:
+        try:
+            _ptz = PTZController(_PTZ_IP, _PTZ_USER, _PTZ_PASS)
+            print("✅ ONVIF PTZ 控制器已连接")
+        except Exception as e:
+            print(f"⚠️  PTZ 连接失败（需在摄像头后台开启 ONVIF）：{e}")
+            _ptz = None
+    return _ptz
 
 ####注释掉的代码都是第一次写的,有很多问题,为了方便对照问题
 app.config["JWT_SECRET_KEY"] = "zimin-demo1"
@@ -38,6 +74,8 @@ URL_RES = "http://127.0.0.1:8080/pases/yolo1/record/img"
 
 
 
+
+
 # 1. 获取当前脚本 mainyolo1.py 所在目录
 script_dir = os.path.dirname(__file__)
 # 往上两级，拿到项目根目录 D:\pycharm\en\demo
@@ -46,6 +84,12 @@ print("项目工程根目录：", project_root)
 # 提取工程文件夹名称（demo）
 project_name = os.path.basename(project_root)
 print("工程目录名：", project_name)
+
+# 模型权重存放目录
+WEIGHTS_DIR = os.path.join(script_dir, "weights")
+if not os.path.exists(WEIGHTS_DIR):
+    os.makedirs(WEIGHTS_DIR)
+    print("模型权重目录已自动创建：", WEIGHTS_DIR)
 # ----------------------
 # 示例1：原图上传文件夹
 # ----------------------
@@ -89,6 +133,15 @@ def expired_token(jwt_header, jwt_payload):
     return jsonify({"success": False, "msg": "登录已过期,请重新登录"}), 401
 
 
+def _check_admin():
+    """校验当前JWT用户是否为系统管理员，不是则返回错误响应"""
+    payload = get_jwt()
+    role = payload.get("role", "")
+    if role != "系统管理员":
+        return jsonify({"success": False, "msg": "权限不足，仅系统管理员可访问"}), 403
+    return None
+
+
 # 仅校验 refresh_token，不需要业务access_token
 @app.route("/api/refresh_token", methods=["POST"])
 @jwt_required(refresh=True)
@@ -107,17 +160,109 @@ def refresh_token():
 
 
 
-# @jwt.expired_token_loader   token合法,但是过期了
-# @jwt_required() 给这个接口加上一个权限,表示访问这个接口必须带有有效的token
-#
+# 验证码存储 {captcha_id: {"text": "ABCD", "time": timestamp}}
+_captcha_store = {}
+CAPTCHA_EXPIRE_SECONDS = 300  # 验证码5分钟过期
 
+def _generate_captcha_text(length=4):
+    """生成随机验证码文本(字母+数字,排除易混字符)"""
+    chars = string.ascii_uppercase + string.digits
+    chars = chars.replace('O', '').replace('0', '').replace('I', '').replace('1', '')
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def _generate_captcha_image(text, width=120, height=40):
+    """生成验证码图片(PIL)，返回base64编码的PNG"""
+    # 创建图像
+    img = Image.new('RGB', (width, height), (240, 240, 240))
+    draw = ImageDraw.Draw(img)
+
+    # 尝试加载字体,失败则用默认
+    try:
+        font = ImageFont.truetype("arial.ttf", 28)
+    except:
+        try:
+            font = ImageFont.truetype("C:/Windows/Fonts/simhei.ttf", 28)
+        except:
+            font = ImageFont.load_default()
+
+    # 绘制文字
+    char_width = width // (len(text) + 1)
+    for i, char in enumerate(text):
+        x = char_width * i + char_width // 4
+        y = random.randint(2, 8)
+        color = (random.randint(30, 100), random.randint(30, 100), random.randint(30, 100))
+        draw.text((x, y), char, fill=color, font=font)
+
+    # 添加干扰线
+    for _ in range(4):
+        x1, y1 = random.randint(0, width), random.randint(0, height)
+        x2, y2 = random.randint(0, width), random.randint(0, height)
+        color = (random.randint(150, 200), random.randint(150, 200), random.randint(150, 200))
+        draw.line([(x1, y1), (x2, y2)], fill=color, width=1)
+
+    # 添加干扰点
+    for _ in range(50):
+        x, y = random.randint(0, width), random.randint(0, height)
+        color = (random.randint(100, 180), random.randint(100, 180), random.randint(100, 180))
+        draw.point((x, y), fill=color)
+
+    # 转为base64
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    return img_base64
+
+@app.route("/api/captcha", methods=["GET"])
+def get_captcha():
+    """获取验证码"""
+    captcha_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
+    captcha_text = _generate_captcha_text()
+    captcha_img = _generate_captcha_image(captcha_text)
+
+    _captcha_store[captcha_id] = {
+        "text": captcha_text,
+        "time": time.time()
+    }
+
+    # 清理过期验证码
+    now = time.time()
+    expired_ids = [k for k, v in _captcha_store.items() if now - v["time"] > CAPTCHA_EXPIRE_SECONDS]
+    for k in expired_ids:
+        del _captcha_store[k]
+
+    return jsonify({
+        "success": True,
+        "captcha_id": captcha_id,
+        "captcha_image": "data:image/png;base64," + captcha_img
+    })
 
 @app.route("/api/login", methods=["POST"])
 def login():
     username = request.json.get("username")
     password = request.json.get("password")
+    captcha_id = request.json.get("captcha_id")
+    captcha_text = request.json.get("captcha_text")
+
     if not username or not password:
         return jsonify({"success": False, "msg": "账号或密码不能为空"}), 403
+
+    # 验证码校验
+    if not captcha_id or not captcha_text:
+        return jsonify({"success": False, "msg": "请输入验证码"}), 403
+
+    captcha_data = _captcha_store.get(captcha_id)
+    if not captcha_data:
+        return jsonify({"success": False, "msg": "验证码已过期,请刷新"}), 403
+
+    if time.time() - captcha_data["time"] > CAPTCHA_EXPIRE_SECONDS:
+        del _captcha_store[captcha_id]
+        return jsonify({"success": False, "msg": "验证码已过期,请刷新"}), 403
+
+    if captcha_text.upper() != captcha_data["text"]:
+        return jsonify({"success": False, "msg": "验证码错误"}), 403
+
+    # 一次性使用,验证后删除
+    del _captcha_store[captcha_id]
 
     sql = "SELECT * FROM users WHERE username = %s"
     result = query_one(sql, (username,))
@@ -194,14 +339,28 @@ def upload():
     img_path = img_res["record_path"]
     real_filename = os.path.basename(img_path)
     result_img_url = f"{URL_RES}/{real_filename}"
+
+    # 6. 保存到数据库
+    user_id = get_jwt().get("user_id")
+    detected_objects = img_res["analysis_result"]["detected_objects"]
+    detect_list = [{"name": obj["name_cn"], "confidence": obj["confidence"]} for obj in detected_objects]
+    db_ok, record_id = model_add(result_img_url, user_id, detect_list)
+
+    # 7. 查询治理方法
+    disease_names = list(set(obj["name_cn"] for obj in detected_objects))
+    treatments = get_disease_treatments(disease_names)
+
     return jsonify(
         {
             "success": True,
             "msg": f"检测成功：{img.filename}",
             "imgurl": result_img_url,
             "record_path": img_res["record_path"],
+            "record_id": record_id if db_ok else None,
+            "save_status": "ok" if db_ok else f"入库失败：{record_id}",
             "result_info": img_res["result_info"],
             "analysis_result": img_res["analysis_result"],
+            "treatments": treatments,
         }
     )
 # 多张图片并发检测
@@ -242,6 +401,7 @@ def batch_upload():
         })
 
     # 3. 逐个检测（串行，避免 GPU 内存溢出）
+    user_id = get_jwt().get("user_id")
     results = []
     for f in valid_files:
         try:
@@ -268,13 +428,25 @@ def batch_upload():
             real_filename = os.path.basename(img_path)
             result_img_url = f"{URL_RES}/{real_filename}"
 
+            # 3d. 保存到数据库
+            detected_objects = img_res["analysis_result"]["detected_objects"]
+            detect_list = [{"name": obj["name_cn"], "confidence": obj["confidence"]} for obj in detected_objects]
+            db_ok, record_id = model_add(result_img_url, user_id, detect_list)
+
+            # 3e. 查询治理方法
+            disease_names = list(set(obj["name_cn"] for obj in detected_objects))
+            treatments = get_disease_treatments(disease_names)
+
             results.append({
                 "filename": f.filename,
                 "success": True,
                 "imgurl": result_img_url,
                 "record_path": img_res["record_path"],
+                "record_id": record_id if db_ok else None,
+                "save_status": "ok" if db_ok else f"入库失败：{record_id}",
                 "result_info": img_res.get("result_info", ""),
-                "analysis_result": img_res.get("analysis_result", {})
+                "analysis_result": img_res.get("analysis_result", {}),
+                "treatments": treatments,
             })
 
         except Exception as e:
@@ -525,18 +697,27 @@ def delete_local_img(img_url: str):
 @app.route('/api/userlist',methods=["POST"])
 @jwt_required()
 def userlist():
+    err = _check_admin()
+    if err:
+        return err
     page = int(request.json.get("page"))
     res =users(page)
     return jsonify({"success": True, "msg": res})
 @app.route('/api/user/add',methods=["POST"])
 @jwt_required()
 def user_add():
+    err = _check_admin()
+    if err:
+        return err
     res =useradd(request.json.get("username"),request.json.get("password"), request.json.get("phone"),request.json.get("role"))
     return jsonify({"success": True, "msg": res})
 
 @app.route('/api/user/update',methods=["POST"])
 @jwt_required()
 def user_update():
+    err = _check_admin()
+    if err:
+        return err
     res = userupdate(
         request.json.get("id"),
         request.json.get("username"),
@@ -549,13 +730,245 @@ def user_update():
 @app.route('/api/user/delete',methods=["POST"])
 @jwt_required()
 def user_del():
+    err = _check_admin()
+    if err:
+        return err
     res = userdel(request.json.get("id"))
     return jsonify({"success": True, "msg": res})
 
 
+# 实时画面流接口
+@app.route("/api/video_feed")
+def video_feed():
+    return Response(generate_mjpeg(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
+
+# 获取最新检测结构化JSON数据接口，Vue可以轮询拿病害信息
+@app.route("/api/latest_result")
+def latest_result():
+    with lock:
+        data = global_latest_analysis
+    if data is None:
+        return jsonify({"success": False, "msg": "暂无检测数据"})
+    return jsonify({"success": True, "data": data})
+
+
+# 查询实时检测开关状态（前端初始化时判断按钮应该显示"开启"还是"停止"）
+@app.route("/api/rtsp/status", methods=["GET"])
+def rtsp_status():
+    running = False
+    with lock:
+        if _rtsp_thread is not None and getattr(_rtsp_thread, "running", False) and _rtsp_thread.thread.is_alive():
+            running = True
+    return jsonify({
+        "success": True,
+        "msg": {
+            "running": running,
+            "rtsp_url": RTSP_URL,
+        }
+    })
+
+
+# 前端点击【开启实时检测】
+@app.route("/api/rtsp/start", methods=["POST"])
+@jwt_required()
+def rtsp_start():
+    global _rtsp_thread
+    # 1. 已在运行则直接返回（防重复启动）
+    if (
+        _rtsp_thread is not None
+        and getattr(_rtsp_thread, "running", False)
+        and _rtsp_thread.thread.is_alive()
+    ):
+        return jsonify({"success": True, "msg": "实时检测已在运行，无需重复开启"})
+
+    # 2. 上一个线程已停止 → 清理引用并清空遗留的最后一帧
+    with lock:
+        _m1.global_frame = None
+        _m1.global_latest_analysis = None
+    _rtsp_thread = None
+
+    # 3. 启动新的采集 + 检测线程
+    try:
+        _rtsp_thread = RtspReadThread(RTSP_URL, detector)
+        print("✅ RTSP 实时检测线程已启动（前端触发）")
+        return jsonify({
+            "success": True,
+            "msg": "开启成功：正在连接摄像头并加载 YOLO 检测，1-3 秒后即可看到画面",
+        })
+    except Exception as e:
+        _rtsp_thread = None
+        err = str(e)
+        print(f"❌ RTSP 线程启动失败（前端触发）：{err}")
+        return jsonify({
+            "success": False,
+            "msg": f"开启失败：{err}",
+            "tip": "请检查摄像头是否在线 / RTSP 地址是否正确 / 网络是否可达",
+        })
+
+
+# 前端点击【停止检测】
+@app.route("/api/rtsp/stop", methods=["POST"])
+@jwt_required()
+def rtsp_stop():
+    global _rtsp_thread
+    # 1. 通知线程停止循环、释放摄像头
+    if _rtsp_thread is not None:
+        try:
+            _rtsp_thread.stop()
+        except Exception as e:
+            print(f"⚠️  停止 RTSP 线程时出现非致命异常：{e}")
+
+    # 2. 清空全局帧缓存 + 分析结果，让 MJPEG 占位图重新显示引导文字
+    with lock:
+        _m1.global_frame = None
+        _m1.global_latest_analysis = None
+
+    _rtsp_thread = None
+    print("🛑 RTSP 实时检测线程已停止（前端触发）")
+    return jsonify({"success": True, "msg": "已停止实时检测"})
+
+
+# ===================== PTZ 云台控制 =====================
+
+@app.route("/api/ptz/move", methods=["POST"])
+@jwt_required()
+def ptz_move():
+    """
+    云台方向控制
+    body: {"direction": "up|down|left|right|zoom_in|zoom_out", "speed": 0.5}
+    """
+    data = request.get_json() or {}
+    direction = data.get("direction", "")
+    speed = float(data.get("speed", 0.5))
+
+    ptz = _get_ptz()
+    if ptz is None:
+        return jsonify({"success": False, "msg": "PTZ 未连接，请在摄像头后台开启 ONVIF 服务"})
+
+    action_map = {
+        "up":       ptz.up,
+        "down":     ptz.down,
+        "left":     ptz.left,
+        "right":    ptz.right,
+        "zoom_in":  ptz.zoom_in,
+        "zoom_out": ptz.zoom_out,
+    }
+    fn = action_map.get(direction)
+    if fn is None:
+        return jsonify({"success": False, "msg": f"未知方向：{direction}"})
+
+    try:
+        fn(speed=speed, timeout=0)
+        return jsonify({"success": True, "msg": f"已发送 {direction} 指令"})
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+
+@app.route("/api/ptz/stop", methods=["POST"])
+@jwt_required()
+def ptz_stop():
+    """停止云台转动"""
+    ptz = _get_ptz()
+    if ptz is None:
+        return jsonify({"success": False, "msg": "PTZ 未连接"})
+    try:
+        ptz.stop()
+        return jsonify({"success": True, "msg": "已停止"})
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+
+# ===================== 模型配置接口 =====================
+@app.route("/api/get_model_config")
+@jwt_required()
+def api_get_model_config():
+    """返回当前模型路径 + 阈值，供前端展示。优先返回实例变量（最准确）"""
+    err = _check_admin()
+    if err:
+        return err
+    return jsonify({
+        "success": True,
+        "msg": {
+            "model_path": _m1.current_model_path or _m1.DEFAULT,
+            "conf_thres": detector.conf_thres,
+            "iou_thres": detector.iou_thres,
+        }
+    })
+
+
+@app.route("/api/save_model_config", methods=["POST"])
+@jwt_required()
+def api_save_model_config():
+    """前端切换模型 / 阈值 → 热加载新权重 + 清空检测状态"""
+    err = _check_admin()
+    if err:
+        return err
+    data = request.get_json() or {}
+    new_path = data.get("model_path", "")
+    new_conf = data.get("conf_thres")
+    new_iou = data.get("iou_thres")
+
+    # 1. 写入 JSON + 更新全局变量
+    _m1.save_model_config(new_path, new_conf, new_iou)
+
+    # 2. 判断是否需要重新加载模型（路径变化才重载，只改阈值直接赋值）
+    need_reload = bool(new_path) and (new_path != detector.weights_path)
+
+    if need_reload:
+        try:
+            detector.reload_model(new_path, conf_thres=new_conf, iou_thres=new_iou)
+            print(f"✅ 模型热加载成功：{new_path}")
+        except Exception as e:
+            print(f"❌ 模型热加载失败：{e}")
+            return jsonify({"success": False, "msg": f"模型加载失败：{e}"})
+    else:
+        # 只改阈值时，直接同步到实例（路径没变或路径为空）
+        if new_conf is not None:
+            detector.conf_thres = new_conf
+        if new_iou is not None:
+            detector.iou_thres = new_iou
+        # 如果传了新路径但和当前相同，仍需更新 weights_path 记录
+        if new_path and new_path == detector.weights_path:
+            detector.weights_path = new_path
+
+    # 3. 切换模型后清空全局帧 + 分析结果（MJPEG 自动切回占位图）
+    with _m1.lock:
+        _m1.global_frame = None
+        _m1.global_latest_analysis = None
+
+    return jsonify({"success": True, "msg": "模型配置已保存并热加载"})
+
+
+@app.route("/api/upload_model", methods=["POST"])
+@jwt_required()
+def upload_model():
+    """上传 .pt 权重文件，保存到 weights 目录，返回保存后的绝对路径"""
+    err = _check_admin()
+    if err:
+        return err
+    if "file" not in request.files:
+        return jsonify({"success": False, "msg": "未上传文件"})
+
+    f = request.files["file"]
+    if not f.filename.endswith(".pt"):
+        return jsonify({"success": False, "msg": "仅支持 .pt 权重文件"})
+
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    safe_name = secure_filename(f.filename)
+    save_name = f"{ts}_{safe_name}"
+    save_path = os.path.join(WEIGHTS_DIR, save_name)
+    f.save(save_path)
+
+    return jsonify({
+        "success": True,
+        "msg": "权重上传成功",
+        "model_path": save_path
+    })
 
 
 if __name__ == "__main__":
     start_clean_timer()
+    # ⚠️ 注意：RtspReadThread 不再在服务启动时自动开启，改为前端点击【开启实时检测】按钮后
+    #         调用 POST /api/rtsp/start 按需启动（避免摄像头离线 / 无人使用时白白占用 GPU/带宽）
     app.run(host="127.0.0.1", port=8080)

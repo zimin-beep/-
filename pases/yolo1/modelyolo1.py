@@ -1,15 +1,72 @@
 import copy
+import json
 import cv2
 import torch
-import numpy as np
 import time
 import os
 import os.path as osp
+import threading
+from datetime import datetime
 from ultralytics import YOLO
 
 # ===================== 全局常量定义 =====================
 # 模型默认权重路径，可自行修改
 DEFAULT = r'D:\pycharm\en\demo\ultralytics-main\runs\detect\train-6\weights\best.pt'
+
+# 当前生效的模型权重路径（由 load_model_config 读取，空字符串表示用 DEFAULT）
+current_model_path = ""
+# 模型配置 JSON 文件路径
+CONFIG_JSON_PATH = "model_config.json"
+# 全局置信度 / NMS 阈值，前端可通过 /api/save_model_config 动态修改
+conf_thres = 0.25
+iou_thres = 0.45
+
+
+
+def _resolve_dirs():
+    """
+    与 mainyolo1.py 保持一致地动态解析目录（避免顶层循环 import）
+    返回：(临时预览图目录 tmp_dir, 结果存档目录 result_dir)
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))   # .../pases/yolo1
+    project_root = os.path.dirname(os.path.dirname(script_dir))  # .../demo
+    tmp_dir = os.path.join(script_dir, "images", "tmp")
+    result_dir = os.path.join(script_dir, "record", "img")
+    os.makedirs(tmp_dir, exist_ok=True)
+    os.makedirs(result_dir, exist_ok=True)
+    return tmp_dir, result_dir
+
+
+# 提前解析出绝对路径并建目录，后续 detect_image 直接使用
+_TMP_DIR, _RESULT_DIR = _resolve_dirs()
+
+
+def load_model_config():
+    """从 model_config.json 读取模型路径 + 阈值，写回全局变量"""
+    global current_model_path, conf_thres, iou_thres
+    if osp.exists(CONFIG_JSON_PATH):
+        with open(CONFIG_JSON_PATH, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+            current_model_path = cfg.get("model_path", "")
+            conf_thres = cfg.get("conf_thres", 0.25)
+            iou_thres = cfg.get("iou_thres", 0.45)
+
+
+def save_model_config(model_path, new_conf=None, new_iou=None):
+    """保存模型路径 + 阈值到 JSON，同时更新全局变量"""
+    global current_model_path, conf_thres, iou_thres
+    current_model_path = model_path
+    if new_conf is not None:
+        conf_thres = new_conf
+    if new_iou is not None:
+        iou_thres = new_iou
+    cfg = {
+        "model_path": model_path,
+        "conf_thres": conf_thres,
+        "iou_thres": iou_thres,
+    }
+    with open(CONFIG_JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
 class YOLO1:
@@ -17,18 +74,23 @@ class YOLO1:
     YOLOv8 病害检测推理封装类
     功能：图片目标检测、可视化编号标注、置信度评级、目标位置解析、结果结构化整理、图片自动存档
     """
-    def __init__(self, weights_path: str = DEFAULT):
+    # 病虫害中英文映射字典（可按需扩充）
+    NAME_MAP = {"basketball": "篮球"}
+
+    def __init__(self, weights_path: str = DEFAULT, conf_thres: float = None, iou_thres: float = None):
         """
         类初始化
         :param weights_path: YOLO模型权重文件路径，不传则使用默认best.pt
+        :param conf_thres: 置信度阈值，不传则使用模块级全局变量（从配置文件读取）
+        :param iou_thres: NMS IOU阈值，不传则使用模块级全局变量
         """
         self.weights_path = weights_path
         # 加载YOLO模型实例
         self.model = self.load_model()
-        # 置信度阈值：低于该值的框直接过滤
-        self.conf_thres = 0.25
-        # NMS非极大抑制IOU阈值：去除重叠冗余框
-        self.iou_thres = 0.45
+        # 置信度阈值：优先使用传入参数，否则使用模块级配置
+        self.conf_thres = conf_thres if conf_thres is not None else globals().get('conf_thres', 0.25)
+        # NMS非极大抑制IOU阈值
+        self.iou_thres = iou_thres if iou_thres is not None else globals().get('iou_thres', 0.45)
         # 是否保存txt检测标签文件
         self.save_txt = False
         # 是否在txt中保存置信度
@@ -44,6 +106,19 @@ class YOLO1:
         :return: YOLO模型对象
         """
         return YOLO(self.weights_path)
+
+    def reload_model(self, model_path, conf_thres=None, iou_thres=None):
+        """热加载新模型权重，切换检测模型，同时更新阈值。自动清理旧模型 GPU 显存。"""
+        self.weights_path = model_path
+        # 先释放旧模型，避免 GPU 显存泄漏
+        del self.model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self.model = YOLO(model_path)
+        if conf_thres is not None:
+            self.conf_thres = conf_thres
+        if iou_thres is not None:
+            self.iou_thres = iou_thres
 
     def _judge_probability(self, conf):
         """
@@ -210,19 +285,17 @@ class YOLO1:
             im0 = copy.deepcopy(annotated_img)
             resize_scale = output_size / im0.shape[0]
             im0 = cv2.resize(im0, (0, 0), fx=resize_scale, fy=resize_scale)
-            tmp_path = "images/tmp/single_result.jpg"
+            tmp_path = os.path.join(_TMP_DIR, "single_result.jpg")
             cv2.imwrite(tmp_path, im0)
 
-            # 生成带时间戳的存档图片，永久保存到record/img
-            time_re = time.strftime("result_%Y-%m-%d_%H-%M-%S_%A")
-            record_dir = "record/img"
-            os.makedirs(record_dir, exist_ok=True)
-            record_path = osp.join(record_dir, f"{time_re}.jpg")
+            # 生成带时间戳的存档图片，永久保存到 record/img（微秒级精度，防止批量检测时文件名冲突覆盖）
+            time_re = datetime.now().strftime("result_%Y-%m-%d_%H-%M-%S_%f")
+            record_path = osp.join(_RESULT_DIR, f"{time_re}.jpg")
             cv2.imwrite(record_path, annotated_img)
 
             # 类别中英文映射字典，可扩充病害中英文对照
             result_names = result.names
-            name_map = {"basketball": "篮球"}
+            name_map = self.NAME_MAP
 
             detected_objects = []   # 存放所有目标详细信息
             confidence_list = []    # 收集全部置信度，用于后续平均值计算
@@ -284,6 +357,7 @@ class YOLO1:
             result_info = ""
             for name, info in class_summary.items():
                 result_info += f"{name}:{info['count']}个\n"
+           
 
             total_count = len(detected_objects)
             # 平均置信度
@@ -319,6 +393,116 @@ class YOLO1:
             # 异常捕获，返回错误信息
             return {"success": False, "error": str(e)}
 
+    def detect_frame(self, frame, output_size: int = 720):
+        """
+        【内存实时推理，用于摄像头流，不读写磁盘｜ByteTrack跟踪模式】
+        :param frame: numpy数组 BGR摄像头帧
+        :param output_size: 输出预览高度
+        :return: success, annotated_img(带框numpy), analysis_result结构化数据
+        """
+        try:
+            # track增加 persist=True，指定bytetrack跟踪器
+            results = self.model.track(
+                frame,
+                conf=self.conf_thres,
+                iou=self.iou_thres,
+                persist=True,  # ✅关键：维持跟踪器跨帧状态
+                tracker="bytetrack.yaml",  # ✅跟踪算法
+                save_txt=False,
+                save_conf=False,
+                save_crop=False,
+            )
+            result = results[0]
+            img_array = result.plot()
+            num_boxes = len(result.boxes)
+            annotated_img = img_array.copy()
+
+            # 绘制编号
+            for i, box in enumerate(result.boxes):
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                if num_boxes <= 3:
+                    self._draw_number_in_box(annotated_img, i + 1, x1, y1, x2, y2)
+                else:
+                    self._draw_number_with_line(annotated_img, i + 1, x1, y1, x2, y2, i)
+
+            result_names = result.names
+            name_map = self.NAME_MAP
+            detected_objects = []
+            confidence_list = []
+
+            for i, box in enumerate(result.boxes):
+                conf = float(box.conf)
+                confidence_list.append(conf)
+                cls_id = int(box.cls)
+                en_name = result_names[cls_id]
+                cn_name = name_map.get(en_name, en_name)
+                level, suggestion = self._judge_probability(conf)
+
+                img_h, img_w = img_array.shape[:2]
+                cx = float(box.xywh[0][0])
+                cy = float(box.xywh[0][1])
+                rel_x = cx / img_w
+                rel_y = cy / img_h
+                position_desc = self._get_position_description(rel_x, rel_y)
+
+                # --------使用track_id，没有id时回退帧内下标--------
+                if box.id is not None:
+                    track_id = int(box.id.item())
+                else:
+                    track_id = i + 1
+
+                obj = {
+                    "id": i + 1,  # 统一字段名，前端用这个渲染编号
+                    "track_id": track_id,  # ✅跟踪全局ID，业务存库用这个
+                    "frame_index_id": i + 1,  # ✅本帧数组下标，绘图显示用
+                    "class_id": cls_id,
+                    "name_en": en_name,
+                    "name_cn": cn_name,
+                    "confidence": round(conf, 4),
+                    "confidence_percent": f"{conf * 100:.2f}%",
+                    "position": {
+                        "x1": round(float(box.xyxy[0][0]), 2),
+                        "y1": round(float(box.xyxy[0][1]), 2),
+                        "x2": round(float(box.xyxy[0][2]), 2),
+                        "y2": round(float(box.xyxy[0][3]), 2),
+                        "description": position_desc,
+                    },
+                    "judgment": {"level": level, "suggestion": suggestion},
+                }
+                detected_objects.append(obj)
+
+            class_summary = {}
+            for obj in detected_objects:
+                name = obj["name_cn"]
+                if name not in class_summary:
+                    class_summary[name] = {"count": 0, "objects": []}
+                class_summary[name]["count"] += 1
+                class_summary[name]["objects"].append(obj["track_id"])  # 汇总用track_id
+
+            total_count = len(detected_objects)
+            avg_conf = (
+                sum(confidence_list) / len(confidence_list) if confidence_list else 0
+            )
+            level_count = {}
+            for obj in detected_objects:
+                lv = obj["judgment"]["level"]
+                level_count[lv] = level_count.get(lv, 0) + 1
+
+            analysis_result = {
+                "detected_objects": detected_objects,
+                "summary": {
+                    "total": total_count,
+                    "avg_confidence": round(avg_conf, 4),
+                    "class_summary": class_summary,
+                    "level_distribution": level_count,
+                },
+            }
+            return True, annotated_img, analysis_result
+        except Exception as e:
+            return False, None, {"error": str(e)}
+
+
+
     def _get_position_description(self, rel_x, rel_y):
         """
         私有方法：根据目标中心点相对图片坐标，生成中文方位描述
@@ -345,3 +529,109 @@ class YOLO1:
         v = "上方" if rel_y < 0.33 else ("下方" if rel_y > 0.66 else "中部")
 
         return f"{v}{h}"
+
+
+# 乐橙RTSP地址【主码流 H.264 subtype=0】，末尾 ?tcp 强制TCP传输
+RTSP_URL = "rtsp://admin:L2801724@192.168.1.79:554/cam/realmonitor?channel=1&subtype=0?tcp"
+FLASK_HOST = "0.0.0.0"
+FLASK_PORT = 5000
+
+# 全局共享变量
+global_frame = None
+global_latest_analysis = None
+lock = threading.Lock()
+
+
+class RtspReadThread:
+    def __init__(self, rtsp_url, yolo_ins: YOLO1):
+        self.yolo = yolo_ins
+        # 指定FFMPEG后端，大华RTSP兼容性更好
+        self.cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+        self.running = True
+        self.thread = threading.Thread(target=self._loop_task, daemon=True)
+        self.thread.start()
+
+    def _loop_task(self):
+        global global_frame, global_latest_analysis
+        frame_counter = 0
+        # MX350显卡，1080P主码流，不要0！每3帧推理一次；卡顿严重改为3
+        SKIP_FRAME = 0
+
+        while self.running:
+            # 丢弃缓存队列积压旧帧，只拿最新画面
+            for _ in range(2):
+                self.cap.grab()
+            # grab之后直接retrieve，不要再cap.read()
+            ret, frame = self.cap.retrieve()
+            if not ret:
+                time.sleep(0.2)
+                continue
+
+            frame_counter += 1
+
+            if frame_counter % (SKIP_FRAME +1) == 0:
+                ok, annotated_img, analysis = self.yolo.detect_frame(frame)
+                if ok:
+                    with lock:
+                        global_frame = annotated_img
+                        global_latest_analysis = analysis
+                else:
+                    # 无目标，只更新分析，保留旧检测框
+                    with lock:
+                        global_latest_analysis = analysis
+
+    def stop(self):
+        self.running = False
+        if self.cap.isOpened():
+            self.cap.release()
+
+
+def _build_placeholder_jpeg(text: str = "等待摄像头画面...", size=(640, 360)) -> bytes:
+    import numpy as np
+    img = np.zeros((size[1], size[0], 3), dtype=np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.8
+    thickness = 2
+    (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
+    tx = (size[0] - tw) // 2
+    ty = (size[1] + th) // 2
+    cv2.putText(img, text, (tx, ty), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    ok, buf = cv2.imencode('.jpg', img)
+    return buf.tobytes() if ok else b''
+
+
+_PLACEHOLDER_JPEG = _build_placeholder_jpeg(text="请点击【开启实时检测】按钮")
+
+
+def generate_mjpeg():
+    """MJPEG流生成器，给前端网页实时画面"""
+    if _PLACEHOLDER_JPEG:
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + _PLACEHOLDER_JPEG + b'\r\n')
+
+    sent_placeholder = False
+    while True:
+        with lock:
+            frame = global_frame
+        if frame is None:
+            if not sent_placeholder and _PLACEHOLDER_JPEG:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + _PLACEHOLDER_JPEG + b'\r\n')
+                sent_placeholder = True
+            time.sleep(0.12)
+            continue
+        sent_placeholder = False
+
+        # 输出前缩放画面，降低jpeg编码耗时、浏览器传输压力
+        h, w = frame.shape[:2]
+        max_height = 720
+        if h > max_height:
+            scale = max_height / h
+            frame = cv2.resize(frame, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
+
+        ok, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+        if not ok:
+            continue
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')

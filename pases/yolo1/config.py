@@ -43,15 +43,20 @@ create_table_sql_list = ["""
     CREATE TABLE IF NOT EXISTS `disease_knowledge` (
         `id` INT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '病害ID',
         `disease_name` VARCHAR(100) NOT NULL COMMENT '病虫害名称（与YOLO类别严格一致）',
+        `disease_type` TINYINT NOT NULL DEFAULT 0 COMMENT '0-病害 1-虫害',
         `symptom` TEXT COMMENT '典型症状',
         `treatment` TEXT COMMENT '治理处理方案',
         `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '录入时间',
         `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
         PRIMARY KEY (`id`),
         UNIQUE KEY `uk_disease_name` (`disease_name`)
-        ALTER TABLE disease_knowledge
-ADD COLUMN disease_type TINYINT NOT NULL DEFAULT 0 COMMENT '0-病害 1-虫害';
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='病虫害知识库';
+    """,
+
+    # 2.5 兼容老库：补齐 disease_type 列（如新表已包含则自动忽略报错）
+    """
+    ALTER TABLE `disease_knowledge`
+        ADD COLUMN IF NOT EXISTS `disease_type` TINYINT NOT NULL DEFAULT 0 COMMENT '0-病害 1-虫害';
     """,
 
     # 3. detect_record 检测主表
