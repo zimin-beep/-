@@ -1,0 +1,5 @@
+{
+  "model_path": "D:\\pycharm\\en\\demo\\pases\\yolo1\\weights\\20260821_191810_best.pt",
+  "conf_thres": 0.5,
+  "iou_thres": 0.45
+}
