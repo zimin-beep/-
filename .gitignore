@@ -4,7 +4,15 @@
 # macOS 系统文件
 .DS_Store
 
+# IDE / 编辑器缓存
+.idea/
+.vscode/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
 # 检测记录图片 / 临时图片
 pases/yolo1/record/img/
 pases/yolo1/images/tmp/
-upload-demo/static/upload/
+pases/upload-demo/static/upload/

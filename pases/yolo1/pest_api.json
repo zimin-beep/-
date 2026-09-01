@@ -1,0 +1,624 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "病虫害智能识别系统-接口文档",
+    "version": "1.0.0",
+    "description": "基础地址：http://127.0.0.1:8080"
+  },
+  "servers": [
+    {
+      "url": "{{baseUrl}}",
+      "description": "本地后端服务，环境变量baseUrl = http://127.0.0.1:8080"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Authorization: Bearer {{access_token}}"
+      }
+    },
+    "schemas": {
+      "RespBase": {
+        "type": "object",
+        "properties": {
+          "success": {"type": "boolean"},
+          "msg": {}
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/captcha": {
+      "get": {
+        "summary": "获取验证码",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "返回captcha_id与base64图片",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "captcha_id": "a1b2c3d4e5f67890",
+                  "captcha_image": "data:image/png;base64,iVBORw0KGgo..."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/login": {
+      "post": {
+        "summary": "登录获取token",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username","password","captcha_id","captcha_text"],
+                "properties": {
+                  "username": {"type":"string"},
+                  "password": {"type":"string"},
+                  "captcha_id": {"type":"string"},
+                  "captcha_text": {"type":"string"}
+                }
+              },
+              "example": {
+                "username": "admin",
+                "password": "123456",
+                "captcha_id": "a1b2c3d4e5f67890",
+                "captcha_text": "ABCD"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "返回access_token、refresh_token",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "access_token": "eyJhbGci...",
+                  "refresh_token": "eyJhbGci...",
+                  "msg": "系统管理员",
+                  "msg1": "admin",
+                  "user": "admin"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/refresh_token": {
+      "post": {
+        "summary": "刷新access_token，请求头使用refresh_token",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {"required":false},
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {"success":true,"new_access_token":"eyJhbGci..."}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/upload": {
+      "post": {
+        "summary": "单张图片检测",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type":"object",
+                "required":["file"],
+                "properties": {
+                  "file": {"type":"string","format":"binary","description":"图片jpg/png/jpeg/webp"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "msg": "检测成功",
+                  "imgurl": "/pases/yolo1/record/img/20260824_153012_result.jpg",
+                  "record_path": "/Users/mac/PycharmProjects/en/pases/yolo1/record/img/20260824_153012_result.jpg",
+                  "record_id": 56,
+                  "save_status": "ok",
+                  "result_info": [{"name":"Blight","name_cn":"枯萎病","confidence":0.92,"bbox":[120,50,300,280]}],
+                  "analysis_result": "检测到 1 个目标：枯萎病(0.92)",
+                  "treatments": {"枯萎病":"喷施嘧菌酯·苯醚甲环唑悬浮剂..."}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/batch_upload": {
+      "post": {
+        "summary": "批量图片检测",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type":"object",
+                "required":["files"],
+                "properties": {
+                  "files": {"type":"array","items":{"type":"string","format":"binary"},"description":"多张图片文件"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "success":true,"msg":"批量检测完成","total":3,"success_count":2,"fail_count":1,
+                  "results":[],
+                  "errors":[{"filename":"bad.txt","error":"不支持的文件格式"}]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/record": {
+      "post": {
+        "summary": "获取检测记录列表",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json":{"schema":{"type":"object","example":{}}}}
+        },
+        "responses": {"200":{"description":"记录列表"}}
+      }
+    },
+    "/api/sum": {
+      "post": {
+        "summary": "病虫害排行榜",
+        "security": [{"BearerAuth":[]}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","example":{}}}}},
+        "responses":{"200":{}}
+      }
+    },
+    "/api/total": {
+      "post": {
+        "summary": "本周上周对比统计",
+        "security": [{"BearerAuth":[]}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","example":{}}}}},
+        "responses":{"200":{}}
+      }
+    },
+    "/api/total_record": {
+      "post": {
+        "summary": "按周期统计 week/month/year",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "properties":{"period":{"type":"string"}},
+                "example":{"period":"week"}
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/all_record": {
+      "post": {
+        "summary": "全部记录分页",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "required":["page"],
+                "properties":{"page":{"type":"integer"}}
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/detectItem/list": {
+      "post": {
+        "summary": "检测明细列表分页筛选",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "properties": {
+                  "info": {
+                    "type":"object",
+                    "properties": {
+                      "page":{"type":"integer"},
+                      "startTime":{"type":"string"},
+                      "endTime":{"type":"string"},
+                      "disease_type":{"type":"string"},
+                      "item_audit_status":{"type":"string"},
+                      "keyword":{"type":"string"}
+                    }
+                  }
+                },
+                "example":{"info":{"page":1,"startTime":"2026-08-17","endTime":"2026-08-24"}}
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/detect/updateAudit": {
+      "post": {
+        "summary": "更新审核状态",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "required":["itemId","recordId","finalDiseaseId","finalResult","itemAuditStatus"],
+                "properties": {
+                  "itemId":{"type":"integer"},
+                  "recordId":{"type":"integer"},
+                  "finalDiseaseId":{"type":"integer"},
+                  "finalResult":{"type":"string"},
+                  "itemAuditStatus":{"type":"string"},
+                  "auditRemark":{"type":"string"}
+                },
+                "example":{"itemId":1,"recordId":56,"finalDiseaseId":3,"finalResult":"枯萎病","itemAuditStatus":"2","auditRemark":"确认病害"}
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/get_knowledge": {
+      "post": {
+        "summary": "知识库列表",
+        "security": [{"BearerAuth":[]}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","example":{}}}}},
+        "responses":{"200":{}}
+      }
+    },
+    "/api/get_knowledge_item": {
+      "post": {
+        "summary": "知识库分页查询",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "required":["page"],
+                "properties":{"page":{"type":"integer"},"name":{"type":"string"},"type":{"type":"string"}}
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/knowledge/add": {
+      "post": {
+        "summary": "新增知识库",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type":"object",
+                "required":["file","name","type","symptom","treat"],
+                "properties": {
+                  "file":{"type":"string","format":"binary","description":"病害图片"},
+                  "name":{"type":"string","description":"病害名称"},
+                  "type":{"type":"string","description":"病害/虫害"},
+                  "symptom":{"type":"string","description":"症状描述"},
+                  "treat":{"type":"string","description":"治理方案"}
+                }
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/knowledge/update": {
+      "post": {
+        "summary": "更新知识库",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type":"object",
+                "required":["id","name","type","symptom","treat"],
+                "properties": {
+                  "id":{"type":"integer"},
+                  "name":{"type":"string"},
+                  "type":{"type":"string"},
+                  "symptom":{"type":"string"},
+                  "treat":{"type":"string"},
+                  "img_url":{"type":"string","description":"旧图片地址，选填"},
+                  "file":{"type":"string","format":"binary","description":"新图片选填"}
+                }
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/knowledge/del": {
+      "post": {
+        "summary": "单条删除知识库",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema":{"type":"object","required":["id"],"properties":{"id":{"type":"integer"}}},
+              "example":{"id":5}
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/knowledge/batch_del": {
+      "post": {
+        "summary": "批量删除知识库",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema":{"type":"object","required":["ids"],"properties":{"ids":{"type":"array","items":{"type":"integer"}}}},
+              "example":{"ids":[1,2,3]}
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/userlist": {
+      "post": {
+        "summary": "用户列表（管理员）",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json":{"schema":{"type":"object","required":["page"],"properties":{"page":{"type":"integer"}}}}}
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/user/add": {
+      "post": {
+        "summary": "添加用户（管理员）",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "required":["username","password","phone","role"],
+                "properties":{"username":{"type":"string"},"password":{"type":"string"},"phone":{"type":"string"},"role":{"type":"string"}}
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/user/update": {
+      "post": {
+        "summary": "更新用户（管理员）",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "required":["id","username","password","phone","role"],
+                "properties":{"id":{"type":"integer"},"username":{"type":"string"},"password":{"type":"string"},"phone":{"type":"string"},"role":{"type":"string"}}
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/user/delete": {
+      "post": {
+        "summary": "删除用户（管理员）",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json":{"schema":{"type":"object","required":["id"]},"example":{"id":10}}}
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/video_feed": {
+      "get": {
+        "summary": "MJPEG摄像头视频流，Apifox显示二进制，浏览器打开",
+        "security": [],
+        "responses": {"200":{"description":"multipart/x‑mixed‑replace; boundary=frame"}}
+      }
+    },
+    "/api/latest_result": {
+      "get": {
+        "summary": "获取摄像头最新检测结果，无需token",
+        "security": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "data": {
+                    "analysis": "检测到 2 个目标：枯萎病(0.92), 褐斑病(0.85)",
+                    "targets": [{"name_cn":"枯萎病","confidence":0.92,"bbox":[10,10,100,100]}],
+                    "timestamp":"2026-08-24 15:30:12"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rtsp/status": {
+      "get": {
+        "summary": "RTSP状态查询，无需token",
+        "security": [],
+        "responses": {"200":{}}
+      }
+    },
+    "/api/rtsp/start": {
+      "post": {
+        "summary": "启动RTSP实时检测",
+        "security": [{"BearerAuth":[]}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","example":{}}}}},
+        "responses":{"200":{}}
+      }
+    },
+    "/api/rtsp/stop": {
+      "post": {
+        "summary": "停止RTSP实时检测",
+        "security": [{"BearerAuth":[]}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","example":{}}}}},
+        "responses":{"200":{}}
+      }
+    },
+    "/api/ptz/move": {
+      "post": {
+        "summary": "云台移动控制",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "required":["direction"],
+                "properties":{"direction":{"type":"string","enum":["up","down","left","right","zoom_in","zoom_out"]},"speed":{"type":"number"}}
+              },
+              "example":{"direction":"up","speed":0.5}
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/ptz/stop": {
+      "post": {
+        "summary": "云台停止",
+        "security": [{"BearerAuth":[]}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","example":{}}}}},
+        "responses":{"200":{}}
+      }
+    },
+    "/api/get_model_config": {
+      "get": {
+        "summary": "获取模型配置（管理员）",
+        "security": [{"BearerAuth":[]}],
+        "responses":{"200":{}}
+      }
+    },
+    "/api/save_model_config": {
+      "post": {
+        "summary": "保存模型配置（管理员）",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type":"object",
+                "properties": {
+                  "model_path":{"type":"string"},
+                  "conf_thres":{"type":"number"},
+                  "iou_thres":{"type":"number"},
+                  "rtsp_url":{"type":"string"},
+                  "ptz_ip":{"type":"string"},
+                  "ptz_user":{"type":"string"},
+                  "ptz_pass":{"type":"string"}
+                }
+              },
+              "example":{"conf_thres":0.25,"iou_thres":0.7,"rtsp_url":"rtsp://admin:L2801724@192.168.1.79:554/cam/realmonitor?channel=1&subtype=0"}
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/upload_model": {
+      "post": {
+        "summary": "上传.pt模型权重（管理员）",
+        "security": [{"BearerAuth":[]}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type":"object",
+                "required":["file"],
+                "properties":{"file":{"type":"string","format":"binary","description":".pt权重文件"}}
+              }
+            }
+          }
+        },
+        "responses":{"200":{}}
+      }
+    },
+    "/api/gettime": {
+      "post": {
+        "summary": "获取服务器时间，无需鉴权",
+        "security": [],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","example":{}}}}},
+        "responses": {"200":{"content":{"application/json":{"example":{"time":"2026-08-24"}}}}}
+      }
+    }
+  }
+}
