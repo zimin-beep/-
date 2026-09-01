@@ -1,0 +1,10 @@
+# 模型权重文件过大(326MB)，超过 Gitee 单文件 100MB 限制，不入库
+*.pt
+
+# macOS 系统文件
+.DS_Store
+
+# 检测记录图片 / 临时图片
+pases/yolo1/record/img/
+pases/yolo1/images/tmp/
+upload-demo/static/upload/

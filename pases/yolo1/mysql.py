@@ -77,10 +77,10 @@ def get_detect_records(limit=10):
     -- 明细整体审核状态汇总展示
     GROUP_CONCAT(
         DISTINCT CONCAT(
-            '条目', dri.item_ic,
+            '条目', dri.item_id,
             ':',
             CASE dri.item_audit_status
-                WHEN 0 THEN '无需审核'
+                WHEN 0 THEN '待确认'
                 WHEN 1 THEN '待确认'
                 WHEN 2 THEN '已确认'
                 WHEN 3 THEN '误报'
@@ -90,12 +90,7 @@ def get_detect_records(limit=10):
         ) SEPARATOR ' | '
     ) AS item_audit_detail,
     -- 整条记录综合审核状态（推荐用主表audit_status）
-    CASE dr.audit_status
-        WHEN 0 THEN '未审核'
-        WHEN 1 THEN '部分审核'
-        WHEN 2 THEN '全部审核完成'
-        ELSE '未知状态'
-    END AS record_audit_status
+    
 FROM detect_record dr
 -- 上传人关联
 LEFT JOIN users u_upload ON dr.user_id = u_upload.user_id
@@ -184,7 +179,7 @@ def total_count():
         SUM(CASE 
         WHEN update_time >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
          AND disease_type = 0
-         AND item_audit_status =0
+         AND item_audit_status = 1
         THEN 1 ELSE 0 END) AS disease_untreated,
         
     -- 本周虫害：治理完成
@@ -199,7 +194,7 @@ def total_count():
     SUM(CASE 
         WHEN update_time >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
          AND disease_type = 1
-         AND item_audit_status =0 
+         AND item_audit_status = 1 
         THEN 1 ELSE 0 END) AS pest_untreated
 
     
@@ -320,7 +315,7 @@ def all_record(page=None):
     i.final_result,
     i.disease_type,
     CASE i.item_audit_status
-        WHEN 0 THEN '无需审核'
+        WHEN 0 THEN '待确认'
         WHEN 1 THEN '待确认'
         WHEN 2 THEN '已确认'
         WHEN 3 THEN '误报'
@@ -368,10 +363,10 @@ def detectitem(page=None, filters=None):
     offset = (page - 1) * 10
 
     sql = """
-    SELECT i.*, u.username AS upload_user,
+    SELECT i.*, u.username AS upload_user, u_ad.username AS audit_user,
 DATE_FORMAT(i.update_time, '%%Y-%%m-%%d %%H:%%i:%%s') AS update_time_str,
         CASE i.item_audit_status
-        WHEN 0 THEN '无需审核'
+        WHEN 0 THEN '待确认'
         WHEN 1 THEN '待确认'
         WHEN 2 THEN '已确认'
         WHEN 3 THEN '误报'
@@ -382,6 +377,7 @@ DATE_FORMAT(i.update_time, '%%Y-%%m-%%d %%H:%%i:%%s') AS update_time_str,
 FROM detect_record_item i
 JOIN detect_record r ON i.record_id = r.id
 JOIN users u ON r.user_id = u.user_id
+LEFT JOIN users u_ad ON r.auditor_id = u_ad.user_id
 WHERE 1=1
     """
     params = []
@@ -410,9 +406,9 @@ WHERE 1=1
 
     # 4. 关键词
     if filters.get("keyword"):
-        sql += " AND (i.disease_name LIKE %s OR u.username LIKE %s)"
+        sql += " AND (i.disease_name LIKE %s OR u.username LIKE %s OR u_ad.username LIKE %s)"
         kw = f"%{filters['keyword']}%"
-        params.extend([kw, kw])
+        params.extend([kw, kw, kw])
 
     # 排序 + 分页
     sql += " ORDER BY update_time DESC LIMIT %s, 10"
@@ -475,6 +471,9 @@ def update_audit_item_record(
     SET final_disease_id = %s, final_result = %s, item_audit_status = %s, update_time = NOW()
     WHERE item_id = %s;
     """
+    # final_disease_id 为 None 时显式转为 NULL
+    if final_disease_id in (None, '', 'null'):
+        final_disease_id = None
     # 主记录更新：审核人、备注、审核时间，audit_status不和明细共用，单独使用
     SQL_UPDATE_RECORD_AUDIT = """
     UPDATE detect_record
@@ -579,7 +578,7 @@ def knowledge_item(page=None, filters=None):
 
 # 新增
 def add_knowledge(form_data):
-    sql = "INSERT INTO disease_knowledge(disease_name,disease_type,example_url,symptom,treatment) VALUES(%s,%s,%s,%s,%s)"
+    sql = "INSERT INTO disease_knowledge(disease_name,disease_type,example_url,symptom,treatment,create_time,update_time) VALUES(%s,%s,%s,%s,%s,NOW(),NOW())"
     with pymysql.connect(**db_config) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -638,7 +637,7 @@ def del_choose_knowledge(id_list):
 def update_knowledge(name, type, img_url, symptom, treat, item_id):
     sql = """
     UPDATE disease_knowledge
-    SET disease_name=%s,disease_type=%s,example_url=%s,symptom=%s,treatment=%s
+    SET disease_name=%s,disease_type=%s,example_url=%s,symptom=%s,treatment=%s,update_time=NOW()
     WHERE id=%s
     
     """
@@ -719,14 +718,39 @@ def get_disease_by_name(disease_name: str):
 def get_disease_treatments(disease_names: list):
     if not disease_names:
         return {}
-    sql = """
+    placeholders = ','.join(['%s'] * len(disease_names))
+    sql = f"""
         SELECT disease_name, symptom, treatment
         FROM disease_knowledge
-        WHERE disease_name IN (%s)
+        WHERE disease_name IN ({placeholders})
     """
-    results = query(sql, (tuple(disease_names),))
+    results = query(sql, tuple(disease_names))
     return {r['disease_name']: r for r in results}
 
+
+# 确保 detect_record_item 表的关键字段允许 NULL（用于"未检测出"记录）
+def _ensure_nullable_columns():
+    try:
+        conn = pymysql.connect(**db_config)
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE detect_record_item MODIFY COLUMN disease_id INT NULL")
+            cur.execute("ALTER TABLE detect_record_item MODIFY COLUMN final_disease_id INT NULL")
+            cur.execute("ALTER TABLE detect_record_item MODIFY COLUMN disease_type INT NULL")
+        conn.close()
+    except Exception:
+        pass
+
+_ensure_nullable_columns()
+
+# 迁移：旧数据 item_audit_status=0 统一更新为 1（待确认），舍弃"无需审核"状态
+try:
+    conn = pymysql.connect(**db_config)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE detect_record_item SET item_audit_status = 1 WHERE item_audit_status = 0")
+        conn.commit()
+    conn.close()
+except Exception:
+    pass
 
 # 模型检测完后的信息存放入数据库中
 # detect_result_list: [{"name": "叶霉病", "confidence": 0.95}, ...]
@@ -754,8 +778,13 @@ def model_add(image_url: str, user_id: int, detect_result_list: list):
                     (name,)
                 )
                 row = cur.fetchone()
-                disease_id = row[0] if row else None
-                disease_type = row[1] if row else 0
+                if not row:
+                    continue
+                disease_id = row[0]
+                disease_type = row[1]
+
+                # 置信度 > 0.8 自动归为已确认(2)，否则待确认(1)
+                auto_status = 2 if confidence > 0.8 else 1
 
                 cur.execute(
                     "INSERT INTO detect_record_item "
@@ -764,7 +793,7 @@ def model_add(image_url: str, user_id: int, detect_result_list: list):
                     "disease_type, update_time) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())",
                     (record_id, disease_id, name, confidence,
-                     0, disease_id, name, disease_type)
+                     auto_status, disease_id, name, disease_type)
                 )
 
         conn.commit()

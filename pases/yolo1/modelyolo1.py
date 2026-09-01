@@ -11,7 +11,7 @@ from ultralytics import YOLO
 
 # ===================== 全局常量定义 =====================
 # 模型默认权重路径，可自行修改
-DEFAULT = r'D:\pycharm\en\demo\ultralytics-main\runs\detect\train-6\weights\best.pt'
+DEFAULT = "/Users/mac/PycharmProjects/train/corn-disease-download/corn-disease-best.pt"
 
 # 当前生效的模型权重路径（由 load_model_config 读取，空字符串表示用 DEFAULT）
 current_model_path = ""
@@ -20,6 +20,9 @@ CONFIG_JSON_PATH = "model_config.json"
 # 全局置信度 / NMS 阈值，前端可通过 /api/save_model_config 动态修改
 conf_thres = 0.25
 iou_thres = 0.45
+# 摄像头 RTSP 地址 + PTZ 认证（前端可配置）
+rtsp_url = ""
+
 
 
 
@@ -42,28 +45,44 @@ _TMP_DIR, _RESULT_DIR = _resolve_dirs()
 
 
 def load_model_config():
-    """从 model_config.json 读取模型路径 + 阈值，写回全局变量"""
-    global current_model_path, conf_thres, iou_thres
+    """从 model_config.json 读取模型路径 + 阈值 + 摄像头配置，写回全局变量"""
+    global current_model_path, conf_thres, iou_thres, rtsp_url, ptz_ip, ptz_user, ptz_pass
     if osp.exists(CONFIG_JSON_PATH):
         with open(CONFIG_JSON_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
             current_model_path = cfg.get("model_path", "")
             conf_thres = cfg.get("conf_thres", 0.25)
             iou_thres = cfg.get("iou_thres", 0.45)
+            rtsp_url = cfg.get("rtsp_url", "")
+            ptz_ip = cfg.get("ptz_ip", "")
+            ptz_user = cfg.get("ptz_user", "")
+            ptz_pass = cfg.get("ptz_pass", "")
 
 
-def save_model_config(model_path, new_conf=None, new_iou=None):
-    """保存模型路径 + 阈值到 JSON，同时更新全局变量"""
-    global current_model_path, conf_thres, iou_thres
+def save_model_config(model_path, new_conf=None, new_iou=None, new_rtsp=None, new_ptz_ip=None, new_ptz_user=None, new_ptz_pass=None):
+    """保存模型路径 + 阈值 + 摄像头配置到 JSON，同时更新全局变量"""
+    global current_model_path, conf_thres, iou_thres, rtsp_url, ptz_ip, ptz_user, ptz_pass
     current_model_path = model_path
     if new_conf is not None:
         conf_thres = new_conf
     if new_iou is not None:
         iou_thres = new_iou
+    if new_rtsp is not None:
+        rtsp_url = new_rtsp
+    if new_ptz_ip is not None:
+        ptz_ip = new_ptz_ip
+    if new_ptz_user is not None:
+        ptz_user = new_ptz_user
+    if new_ptz_pass is not None:
+        ptz_pass = new_ptz_pass
     cfg = {
         "model_path": model_path,
         "conf_thres": conf_thres,
         "iou_thres": iou_thres,
+        "rtsp_url": rtsp_url,
+        "ptz_ip": ptz_ip,
+        "ptz_user": ptz_user,
+        "ptz_pass": ptz_pass,
     }
     with open(CONFIG_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -75,7 +94,19 @@ class YOLO1:
     功能：图片目标检测、可视化编号标注、置信度评级、目标位置解析、结果结构化整理、图片自动存档
     """
     # 病虫害中英文映射字典（可按需扩充）
-    NAME_MAP = {"basketball": "篮球"}
+    NAME_MAP = {
+        "Blight": "枯萎病",
+        "brown_spot": "褐斑病",
+        "corn_rust": "玉米锈病",
+        "corn_smut": "玉米肿瘤病",
+        "downy_mildew": "霜霉病",
+        "fall-armyworm-larva": "秋黏虫幼虫",
+        "grey_leaf_spot": "灰斑病",
+        "healthy": "健康",
+        "maize-streak-disease": "玉米条斑病",
+        "yellow-stem-borer": "黄茎螟",
+        "yellow-stem-borer-larva": "黄茎螟幼虫"
+    }
 
     def __init__(self, weights_path: str = DEFAULT, conf_thres: float = None, iou_thres: float = None):
         """
@@ -98,23 +129,36 @@ class YOLO1:
         # 是否裁剪检测目标单独保存
         self.save_crop = False
 
+    @staticmethod
+    def _resolve_device():
+        """自动选择最优推理设备：CUDA > MPS > CPU"""
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+
     @torch.no_grad()
     def load_model(self):
         """
-        加载YOLO模型
+        加载YOLO模型，自动选择最优设备（CUDA / MPS / CPU）
         @torch.no_grad：关闭梯度计算，推理阶段加速、节省显存
         :return: YOLO模型对象
         """
-        return YOLO(self.weights_path)
+        device = self._resolve_device()
+        print(f"[YOLO] 推理设备: {device}")
+        model = YOLO(self.weights_path)
+        model.to(device)
+        return model
 
     def reload_model(self, model_path, conf_thres=None, iou_thres=None):
-        """热加载新模型权重，切换检测模型，同时更新阈值。自动清理旧模型 GPU 显存。"""
+        """热加载新模型权重，切换检测模型，同时更新阈值。自动清理旧模型显存。"""
         self.weights_path = model_path
-        # 先释放旧模型，避免 GPU 显存泄漏
         del self.model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         self.model = YOLO(model_path)
+        self.model.to(self._resolve_device())
         if conf_thres is not None:
             self.conf_thres = conf_thres
         if iou_thres is not None:
@@ -259,6 +303,7 @@ class YOLO1:
             # YOLO执行推理检测
             results = self.model(
                 image_path,
+                imgsz=800,
                 conf=self.conf_thres,
                 iou=self.iou_thres,
                 save_txt=self.save_txt,
@@ -404,6 +449,7 @@ class YOLO1:
             # track增加 persist=True，指定bytetrack跟踪器
             results = self.model.track(
                 frame,
+                imgsz=800,
                 conf=self.conf_thres,
                 iou=self.iou_thres,
                 persist=True,  # ✅关键：维持跟踪器跨帧状态
@@ -531,60 +577,155 @@ class YOLO1:
         return f"{v}{h}"
 
 
-# 乐橙RTSP地址【主码流 H.264 subtype=0】，末尾 ?tcp 强制TCP传输
-RTSP_URL = "rtsp://admin:L2801724@192.168.1.79:554/cam/realmonitor?channel=1&subtype=0?tcp"
+# 乐橙RTSP地址：从 model_config.json 读取，前端可配置
+# 若配置文件未提供，使用此默认值
+_DEFAULT_RTSP_URL = "rtsp://admin:L2801724@192.168.1.79:554/cam/realmonitor?channel=1&subtype=0?tcp"
+RTSP_URL = rtsp_url or _DEFAULT_RTSP_URL
 FLASK_HOST = "0.0.0.0"
 FLASK_PORT = 5000
 
+# 推理跳帧数：每 N 帧推理一次，其余帧只更新画面
+SKIP_FRAME = 3
+
+# 推理输出帧最大高度，超过则等比缩小
+MJPEG_MAX_HEIGHT = 720
+MJPEG_QUALITY = 70
+
 # 全局共享变量
-global_frame = None
-global_latest_analysis = None
+global_frame = None          # 最新帧（用于MJPEG推流）
+global_latest_analysis = None  # 最新分析结果
 lock = threading.Lock()
+# 帧就绪通知：新帧到达或状态变化时唤醒推流
+frame_ready = threading.Condition(lock)
+
+# 预编码JPEG缓存，避免多连接重复resize+imencode
+_cached_jpeg = None
+_cached_jpeg_lock = threading.Lock()
 
 
 class RtspReadThread:
+    """
+    采集线程只负责读RTSP取最新帧 → 推理线程独立消费，队列解耦。
+    推理慢时丢弃旧帧，永远只处理最新帧。
+    """
     def __init__(self, rtsp_url, yolo_ins: YOLO1):
         self.yolo = yolo_ins
-        # 指定FFMPEG后端，大华RTSP兼容性更好
-        self.cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+        self.rtsp_url = rtsp_url
+        self.cap = None
         self.running = True
-        self.thread = threading.Thread(target=self._loop_task, daemon=True)
+        # 最新原始帧 + 是否有新帧待推理
+        self._latest_raw_frame = None
+        self._frame_lock = threading.Lock()
+        self._infer_cond = threading.Condition(self._frame_lock)
+        self._has_new = False
+        self._infer_thread = None
+        self._open_cap()
+
+    def _open_cap(self):
+        """（重建）打开RTSP连接"""
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+        self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    def start(self):
+        """启动采集线程和推理线程"""
+        self._infer_thread = threading.Thread(target=self._infer_loop, daemon=True)
+        self._infer_thread.start()
+        self.thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.thread.start()
 
-    def _loop_task(self):
-        global global_frame, global_latest_analysis
-        frame_counter = 0
-        # MX350显卡，1080P主码流，不要0！每3帧推理一次；卡顿严重改为3
-        SKIP_FRAME = 0
-
+    def _capture_loop(self):
+        """采集线程：只读RTSP取最新帧，不做推理"""
+        consecutive_fail = 0
         while self.running:
-            # 丢弃缓存队列积压旧帧，只拿最新画面
-            for _ in range(2):
-                self.cap.grab()
-            # grab之后直接retrieve，不要再cap.read()
-            ret, frame = self.cap.retrieve()
-            if not ret:
-                time.sleep(0.2)
+            try:
+                # 快速丢弃缓冲区积压的旧帧（非阻塞，最多丢3帧）
+                for _ in range(3):
+                    if not self.cap.grab():
+                        break
+                ret, frame = self.cap.retrieve()
+                if not ret:
+                    consecutive_fail += 1
+                    if consecutive_fail > 10:
+                        print("[RTSP] 连续读取失败，尝试重连...")
+                        self._open_cap()
+                        consecutive_fail = 0
+                        time.sleep(1.0)
+                    else:
+                        time.sleep(0.05)
+                    continue
+                consecutive_fail = 0
+
+                # 把最新帧推给推理线程
+                with self._infer_cond:
+                    self._latest_raw_frame = frame
+                    self._has_new = True
+                    self._infer_cond.notify_all()
+
+            except Exception as e:
+                print(f"[RTSP] 采集异常: {e}")
+                self._open_cap()
+                time.sleep(1.0)
+
+    def _infer_loop(self):
+        """推理线程：从采集线程拿最新帧做YOLO推理"""
+        global global_frame, global_latest_analysis
+        while self.running:
+            # 等待新帧到来
+            with self._infer_cond:
+                while not self._has_new and self.running:
+                    self._infer_cond.wait(timeout=1.0)
+                if not self.running:
+                    break
+                frame = self._latest_raw_frame
+                self._has_new = False
+
+            if frame is None:
                 continue
 
-            frame_counter += 1
-
-            if frame_counter % (SKIP_FRAME +1) == 0:
-                ok, annotated_img, analysis = self.yolo.detect_frame(frame)
+            # 每帧都推理：YOLO检测 + 标注
+            ok, annotated_img, analysis = self.yolo.detect_frame(frame)
+            with frame_ready:
                 if ok:
-                    with lock:
-                        global_frame = annotated_img
-                        global_latest_analysis = analysis
+                    global_frame = annotated_img
                 else:
-                    # 无目标，只更新分析，保留旧检测框
-                    with lock:
-                        global_latest_analysis = analysis
+                    # 推理失败/无目标：用原始帧继续推流，不冻结画面
+                    global_frame = frame
+                global_latest_analysis = analysis
+                _update_cached_jpeg()
+                frame_ready.notify_all()
 
     def stop(self):
         self.running = False
-        if self.cap.isOpened():
+        # 唤醒可能阻塞的推理线程，等待其退出后再释放cap
+        with self._infer_cond:
+            self._infer_cond.notify_all()
+        if self._infer_thread is not None:
+            self._infer_thread.join(timeout=3.0)
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+        if self.cap is not None and self.cap.isOpened():
             self.cap.release()
+
+
+def _update_cached_jpeg():
+    """将 global_frame resize + 编码为 JPEG 缓存，所有MJPEG连接共享"""
+    global _cached_jpeg
+    frame = global_frame
+    if frame is None:
+        return
+    h, w = frame.shape[:2]
+    if h > MJPEG_MAX_HEIGHT:
+        scale = MJPEG_MAX_HEIGHT / h
+        frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), MJPEG_QUALITY])
+    if ok:
+        with _cached_jpeg_lock:
+            _cached_jpeg = buf.tobytes()
 
 
 def _build_placeholder_jpeg(text: str = "等待摄像头画面...", size=(640, 360)) -> bytes:
@@ -605,33 +746,33 @@ _PLACEHOLDER_JPEG = _build_placeholder_jpeg(text="请点击【开启实时检测
 
 
 def generate_mjpeg():
-    """MJPEG流生成器，给前端网页实时画面"""
+    """MJPEG流生成器，所有连接共享预编码JPEG，无重复resize+imencode"""
     if _PLACEHOLDER_JPEG:
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + _PLACEHOLDER_JPEG + b'\r\n')
 
     sent_placeholder = False
+    last_sent = None
     while True:
-        with lock:
-            frame = global_frame
-        if frame is None:
-            if not sent_placeholder and _PLACEHOLDER_JPEG:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + _PLACEHOLDER_JPEG + b'\r\n')
-                sent_placeholder = True
-            time.sleep(0.12)
-            continue
-        sent_placeholder = False
+        with frame_ready:
+            # 等待新帧就绪（事件驱动，不再sleep轮询）
+            jpeg = _cached_jpeg
+            if jpeg is None:
+                if not sent_placeholder and _PLACEHOLDER_JPEG:
+                    jpeg = _PLACEHOLDER_JPEG
+                    sent_placeholder = True
+                else:
+                    frame_ready.wait(timeout=0.5)
+                    continue
+            else:
+                sent_placeholder = False
+                # 帧未变化时不重复发送
+                if jpeg == last_sent:
+                    frame_ready.wait(timeout=0.5)
+                    continue
+                last_sent = jpeg
 
-        # 输出前缩放画面，降低jpeg编码耗时、浏览器传输压力
-        h, w = frame.shape[:2]
-        max_height = 720
-        if h > max_height:
-            scale = max_height / h
-            frame = cv2.resize(frame, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
-
-        ok, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-        if not ok:
+        if jpeg is None:
             continue
         yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+               b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n')

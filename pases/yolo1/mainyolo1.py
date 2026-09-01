@@ -5,7 +5,7 @@ import random
 import string
 import time
 from flask import Flask, request, jsonify, send_from_directory,Response
-from flask_cors import CORS
+# from flask_cors import CORS
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
@@ -26,7 +26,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 允许上传最大 500MB 模型文件
-CORS(app)
+# CORS(app)
 jwt = JWTManager(app)
 
 # 启动时从 model_config.json 读取上一次保存的模型路径 + 阈值
@@ -39,17 +39,13 @@ _rtsp_thread = None
 
 # PTZ 云台控制器（懒加载，首次调用接口时才连接摄像头）
 _ptz = None
-# 摄像头 ONVIF 认证信息（与 RTSP 一致）
-_PTZ_IP = "192.168.1.79"
-_PTZ_USER = "admin"
-_PTZ_PASS = "L2801724"
 
 def _get_ptz():
-    """懒加载 PTZ 控制器，连接失败返回 None"""
+    """懒加载 PTZ 控制器，从 model_config 读取 IP/账号"""
     global _ptz
     if _ptz is None:
         try:
-            _ptz = PTZController(_PTZ_IP, _PTZ_USER, _PTZ_PASS)
+            _ptz = PTZController(_m1.ptz_ip, _m1.ptz_user, _m1.ptz_pass)
             print("✅ ONVIF PTZ 控制器已连接")
         except Exception as e:
             print(f"⚠️  PTZ 连接失败（需在摄像头后台开启 ONVIF）：{e}")
@@ -150,8 +146,9 @@ def refresh_token():
     username = get_jwt_identity()
     payload = get_jwt()
     role = payload.get("role")
+    user_id = payload.get("user_id")
     # 生成全新的业务token返回前端
-    new_access_token = create_access_token(identity=username, additional_claims={"role": role})
+    new_access_token = create_access_token(identity=username, additional_claims={"role": role, "user_id": user_id})
     return jsonify({
         "success": True,
         "new_access_token": new_access_token
@@ -176,20 +173,32 @@ def _generate_captcha_image(text, width=120, height=40):
     img = Image.new('RGB', (width, height), (240, 240, 240))
     draw = ImageDraw.Draw(img)
 
-    # 尝试加载字体,失败则用默认
-    try:
-        font = ImageFont.truetype("arial.ttf", 28)
-    except:
+    # 跨平台字体候选（macOS / Windows / Linux），按顺序尝试
+    font_candidates = [
+        ("/System/Library/Fonts/Supplemental/Arial.ttf", 30),
+        ("/System/Library/Fonts/Menlo.ttc", 30),
+        ("C:/Windows/Fonts/arial.ttf", 30),
+        ("C:/Windows/Fonts/simhei.ttf", 30),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30),
+    ]
+    font = None
+    for path, size in font_candidates:
         try:
-            font = ImageFont.truetype("C:/Windows/Fonts/simhei.ttf", 28)
-        except:
-            font = ImageFont.load_default()
+            font = ImageFont.truetype(path, size)
+            break
+        except Exception:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
 
-    # 绘制文字
-    char_width = width // (len(text) + 1)
+    # 横向均匀分布 + 垂直居中（带少量随机抖动，避免过于呆板）
+    slot = width / len(text)
     for i, char in enumerate(text):
-        x = char_width * i + char_width // 4
-        y = random.randint(2, 8)
+        bbox = font.getbbox(char)
+        cw, ch_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = slot * i + (slot - cw) / 2
+        # 扣除 bbox[1] 内偏移，字符墨水区恰好垂直居中
+        y = (height - ch_h) / 2 - bbox[1] + random.randint(-2, 2)
         color = (random.randint(30, 100), random.randint(30, 100), random.randint(30, 100))
         draw.text((x, y), char, fill=color, font=font)
 
@@ -244,22 +253,21 @@ def login():
     captcha_text = request.json.get("captcha_text")
 
     if not username or not password:
-        return jsonify({"success": False, "msg": "账号或密码不能为空"}), 403
+        return jsonify({"success": False, "msg": "账号或密码不能为空"})
 
-    # 验证码校验
     if not captcha_id or not captcha_text:
-        return jsonify({"success": False, "msg": "请输入验证码"}), 403
+        return jsonify({"success": False, "msg": "请输入验证码"})
 
     captcha_data = _captcha_store.get(captcha_id)
     if not captcha_data:
-        return jsonify({"success": False, "msg": "验证码已过期,请刷新"}), 403
+        return jsonify({"success": False, "msg": "验证码已过期,请刷新"})
 
     if time.time() - captcha_data["time"] > CAPTCHA_EXPIRE_SECONDS:
         del _captcha_store[captcha_id]
-        return jsonify({"success": False, "msg": "验证码已过期,请刷新"}), 403
+        return jsonify({"success": False, "msg": "验证码已过期,请刷新"})
 
     if captcha_text.upper() != captcha_data["text"]:
-        return jsonify({"success": False, "msg": "验证码错误"}), 403
+        return jsonify({"success": False, "msg": "验证码错误"})
 
     # 一次性使用,验证后删除
     del _captcha_store[captcha_id]
@@ -275,8 +283,8 @@ def login():
     else:
         role = "普通用户"
 
-    access_token = create_access_token(identity=username, additional_claims={"role": role})
-    refresh_token =create_refresh_token(identity=username)
+    access_token = create_access_token(identity=username, additional_claims={"role": role, "user_id": result["user_id"]})
+    refresh_token = create_refresh_token(identity=username, additional_claims={"role": role, "user_id": result["user_id"]})
     # create_access_token 是flask-jwt-extended内置函数,用于生成access token ,
     # 里面的identity就是jwt的header,
     # additional_claims 就是jwt的payload
@@ -285,7 +293,8 @@ def login():
                     "access_token": access_token,
                     "refresh_token": refresh_token,
                     "msg": role,
-                    "msg1":result['role']
+                    "msg1":result['role'],
+                    "user":username,
                     }), 200
 
 
@@ -322,13 +331,22 @@ def upload():
 
     # 3. 校验图片后缀格式
     suffix = img.filename.split(".")[-1].lower()
-    allow = ["jpg", "png", "jpeg"]
+    allow = ["jpg", "png", "jpeg", "webp"]
     if suffix not in allow:
-        return jsonify({"success": False, "msg": "文件格式不匹配，仅支持jpg/png/jpeg"})
+        return jsonify({"success": False, "msg": "文件格式不匹配，仅支持jpg/png/jpeg/webp"})
 
     # 4. 拼接本地保存路径，保存原图
-    save_path = os.path.join(UPLOAD, img.filename)
+    original_name = secure_filename(img.filename)
+    save_path = os.path.join(UPLOAD, original_name)
     img.save(save_path)
+
+    # 4.1 webp 转 jpg（YOLO 对 webp 支持不稳定）
+    if suffix == "webp":
+        converted_path = os.path.join(UPLOAD, os.path.splitext(original_name)[0] + ".jpg")
+        with Image.open(save_path) as im:
+            im.convert("RGB").save(converted_path, "JPEG", quality=95)
+        os.remove(save_path)
+        save_path = converted_path
 
     # 5. YOLO模型检测图片
     img_res = detector.detect_image(save_path)
@@ -344,7 +362,11 @@ def upload():
     user_id = get_jwt().get("user_id")
     detected_objects = img_res["analysis_result"]["detected_objects"]
     detect_list = [{"name": obj["name_cn"], "confidence": obj["confidence"]} for obj in detected_objects]
-    db_ok, record_id = model_add(result_img_url, user_id, detect_list)
+    
+    db_ok = False
+    record_id = None
+    if detect_list:
+        db_ok, record_id = model_add(result_img_url, user_id, detect_list)
 
     # 7. 查询治理方法
     disease_names = list(set(obj["name_cn"] for obj in detected_objects))
@@ -357,7 +379,7 @@ def upload():
             "imgurl": result_img_url,
             "record_path": img_res["record_path"],
             "record_id": record_id if db_ok else None,
-            "save_status": "ok" if db_ok else f"入库失败：{record_id}",
+            "save_status": "ok" if db_ok else ("未检测出," if not detect_list else f"入库失败：{record_id}"),
             "result_info": img_res["result_info"],
             "analysis_result": img_res["analysis_result"],
             "treatments": treatments,
@@ -373,7 +395,7 @@ def batch_upload():
         return jsonify({"success": False, "msg": "未上传任何图片"})
 
     # 2. 校验每个文件
-    allow = ["jpg", "png", "jpeg"]
+    allow = ["jpg", "png", "jpeg", "webp"]
     valid_files = []
     errors = []
 
@@ -412,6 +434,15 @@ def batch_upload():
             save_path = os.path.join(UPLOAD, new_name)
             f.save(save_path)
 
+            # 3a.1 webp 转 jpg
+            suffix = f.filename.split(".")[-1].lower()
+            if suffix == "webp":
+                converted_path = os.path.join(UPLOAD, os.path.splitext(new_name)[0] + ".jpg")
+                with Image.open(save_path) as im:
+                    im.convert("RGB").save(converted_path, "JPEG", quality=95)
+                os.remove(save_path)
+                save_path = converted_path
+
             # 3b. YOLO 检测
             img_res = detector.detect_image(save_path)
 
@@ -431,7 +462,11 @@ def batch_upload():
             # 3d. 保存到数据库
             detected_objects = img_res["analysis_result"]["detected_objects"]
             detect_list = [{"name": obj["name_cn"], "confidence": obj["confidence"]} for obj in detected_objects]
-            db_ok, record_id = model_add(result_img_url, user_id, detect_list)
+            
+            db_ok = False
+            record_id = None
+            if detect_list:
+                db_ok, record_id = model_add(result_img_url, user_id, detect_list)
 
             # 3e. 查询治理方法
             disease_names = list(set(obj["name_cn"] for obj in detected_objects))
@@ -443,7 +478,7 @@ def batch_upload():
                 "imgurl": result_img_url,
                 "record_path": img_res["record_path"],
                 "record_id": record_id if db_ok else None,
-                "save_status": "ok" if db_ok else f"入库失败：{record_id}",
+                "save_status": "ok" if db_ok else ("未检测出," if not detect_list else f"入库失败：{record_id}"),
                 "result_info": img_res.get("result_info", ""),
                 "analysis_result": img_res.get("analysis_result", {}),
                 "treatments": treatments,
@@ -575,7 +610,7 @@ def update_audit():
     final_result = data.get("finalResult")
     item_audit_status = data.get("itemAuditStatus")
     audit_remark = data.get("auditRemark", "")
-    auditor_id = data.get("loginUserId")
+    auditor_id = get_jwt().get("user_id")
 
 
 
@@ -613,12 +648,13 @@ def knowledge_add():
 
     # 3. 校验图片后缀格式
     suffix = img.filename.split(".")[-1].lower()
-    allow = ["jpg", "png", "jpeg"]
+    allow = ["jpg", "png", "jpeg","webp"]
     if suffix not in allow:
         return jsonify({"success": False, "msg": "文件格式不匹配，仅支持jpg/png/jpeg"})
-        # 时间戳重命名防文件名冲突
-    new_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S%f')}_{secure_filename(img.filename)}"
-    new_name1 = f"{URL_REGEX}/{datetime.now().strftime('%Y%m%d_%H%M%S%f')}_{secure_filename(img.filename)}"
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S%f')
+    safe_name = secure_filename(img.filename)
+    new_name = f"{timestamp}_{safe_name}"
+    new_name1 = f"{URL_REGEX}/{timestamp}_{safe_name}"
     save_path = os.path.join(UPLOAD_KNOWLEDGE, new_name)
     img.save(save_path)
     url = new_name1
@@ -764,7 +800,7 @@ def rtsp_status():
         "success": True,
         "msg": {
             "running": running,
-            "rtsp_url": RTSP_URL,
+            "rtsp_url": _m1.rtsp_url or _m1._DEFAULT_RTSP_URL,
         }
     })
 
@@ -790,7 +826,8 @@ def rtsp_start():
 
     # 3. 启动新的采集 + 检测线程
     try:
-        _rtsp_thread = RtspReadThread(RTSP_URL, detector)
+        _rtsp_thread = RtspReadThread(_m1.rtsp_url or _m1._DEFAULT_RTSP_URL, detector)
+        _rtsp_thread.start()
         print("✅ RTSP 实时检测线程已启动（前端触发）")
         return jsonify({
             "success": True,
@@ -820,9 +857,11 @@ def rtsp_stop():
             print(f"⚠️  停止 RTSP 线程时出现非致命异常：{e}")
 
     # 2. 清空全局帧缓存 + 分析结果，让 MJPEG 占位图重新显示引导文字
-    with lock:
+    with _m1.frame_ready:
         _m1.global_frame = None
         _m1.global_latest_analysis = None
+        _m1._cached_jpeg = None
+        _m1.frame_ready.notify_all()
 
     _rtsp_thread = None
     print("🛑 RTSP 实时检测线程已停止（前端触发）")
@@ -893,6 +932,10 @@ def api_get_model_config():
             "model_path": _m1.current_model_path or _m1.DEFAULT,
             "conf_thres": detector.conf_thres,
             "iou_thres": detector.iou_thres,
+            "rtsp_url": _m1.rtsp_url or _m1._DEFAULT_RTSP_URL,
+            "ptz_ip": _m1.ptz_ip,
+            "ptz_user": _m1.ptz_user,
+            "ptz_pass": _m1.ptz_pass,
         }
     })
 
@@ -908,9 +951,18 @@ def api_save_model_config():
     new_path = data.get("model_path", "")
     new_conf = data.get("conf_thres")
     new_iou = data.get("iou_thres")
+    new_rtsp = data.get("rtsp_url")
+    new_ptz_ip = data.get("ptz_ip")
+    new_ptz_user = data.get("ptz_user")
+    new_ptz_pass = data.get("ptz_pass")
 
     # 1. 写入 JSON + 更新全局变量
-    _m1.save_model_config(new_path, new_conf, new_iou)
+    _m1.save_model_config(new_path, new_conf, new_iou, new_rtsp, new_ptz_ip, new_ptz_user, new_ptz_pass)
+
+    # 摄像头配置变更后，重置 PTZ 连接（下次调用时自动重连）
+    global _ptz
+    if new_ptz_ip is not None or new_ptz_user is not None or new_ptz_pass is not None:
+        _ptz = None
 
     # 2. 判断是否需要重新加载模型（路径变化才重载，只改阈值直接赋值）
     need_reload = bool(new_path) and (new_path != detector.weights_path)
@@ -933,9 +985,12 @@ def api_save_model_config():
             detector.weights_path = new_path
 
     # 3. 切换模型后清空全局帧 + 分析结果（MJPEG 自动切回占位图）
-    with _m1.lock:
+    with _m1.frame_ready:
         _m1.global_frame = None
         _m1.global_latest_analysis = None
+        with _m1._cached_jpeg_lock:
+            _m1._cached_jpeg = None
+        _m1.frame_ready.notify_all()
 
     return jsonify({"success": True, "msg": "模型配置已保存并热加载"})
 
@@ -969,6 +1024,5 @@ def upload_model():
 
 if __name__ == "__main__":
     start_clean_timer()
-    # ⚠️ 注意：RtspReadThread 不再在服务启动时自动开启，改为前端点击【开启实时检测】按钮后
-    #         调用 POST /api/rtsp/start 按需启动（避免摄像头离线 / 无人使用时白白占用 GPU/带宽）
+
     app.run(host="127.0.0.1", port=8080)

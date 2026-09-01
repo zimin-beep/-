@@ -12,7 +12,7 @@ def clean_folder_by_time(folder_path: str, keep_days: int = 7):
     :param keep_days: 保留最近几天的文件，超过自动删除
     """
     # 允许清理的图片后缀
-    img_suffix = {".jpg", ".jpeg", ".png"}
+    img_suffix = {".jpg", ".jpeg", ".png","webp"}
     folder = Path(folder_path)
     if not folder.exists():
         return

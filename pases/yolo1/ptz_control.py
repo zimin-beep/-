@@ -1,6 +1,6 @@
 """
 摄像头云台（PTZ）控制模块 —— 基于 ONVIF 协议
-直接使用 HTTP Digest Auth + SOAP/XML，不依赖 onvif-zeep 的 WSDL 文件
+直接使用 HTTP Digest Auth + SOAP/XML，
 适用于大华/乐橙/海康等支持 ONVIF 的网络摄像头
 """
 import time
