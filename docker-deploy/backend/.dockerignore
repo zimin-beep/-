@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+*.pt
+pases/yolo1/weights/*
+pases/yolo1/record/*
+pases/yolo1/images/tmp/*
+pases/upload-demo/static/upload/*
+pases/upload-demo/static/knowledge/*

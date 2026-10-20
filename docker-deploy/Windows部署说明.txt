@@ -1,0 +1,48 @@
+# 病虫害管理系统 - Windows GPU 部署指南
+
+## 前置条件
+
+1. Windows 10/11 64位
+2. 有 NVIDIA 显卡，已安装最新驱动
+3. 安装 Docker Desktop for Windows（勾选 WSL2 后端）
+4. Docker Desktop 设置 → Resources → 勾选你的 GPU
+
+## 部署步骤
+
+1. 把整个 docker-deploy 文件夹拷到 Windows 电脑（如 D:\docker-deploy）
+
+2. 打开 PowerShell，进入目录：
+   cd D:\docker-deploy
+
+3. 把模型权重放到 backend\weights\ 目录下
+   （文件名必须和 model_config.json 里的路径一致）
+
+4. 构建并启动：
+   docker compose -f docker-compose.gpu.yml up -d --build
+
+5. 首次构建约 10-15 分钟（下载 CUDA 镜像 + 安装依赖）
+
+6. 初始化数据库（首次）：
+   docker exec -i pases-mysql mysql -uroot -p584521 pases < pases_dump.sql
+
+7. 拷贝知识库图片到容器：
+   docker cp ./knowledge_images/. pases-backend:/app/pases/upload-demo/static/knowledge/
+
+8. 浏览器访问 http://localhost
+
+## 常用命令
+
+停止：  docker compose -f docker-compose.gpu.yml stop
+启动：  docker compose -f docker-compose.gpu.yml start
+重启后端：docker restart pases-backend
+查看日志：docker compose -f docker-compose.gpu.yml logs -f backend
+
+## 注意事项
+
+- 如果 Docker Desktop 没有识别到 GPU，检查：
+  1. NVIDIA 驱动是否最新
+  2. Docker Desktop → Settings → Resources → Devices → 勾选 GPU
+  3. WSL2 是否正常工作（wsl --update）
+
+- 没有 NVIDIA 显卡也能运行，但会用 CPU 推理（较慢）
+  方法：用 docker-compose.yml（CPU版）代替 docker-compose.gpu.yml

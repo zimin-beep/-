@@ -16,3 +16,11 @@ __pycache__/
 pases/yolo1/record/img/
 pases/yolo1/images/tmp/
 pases/upload-demo/static/upload/
+
+# Docker 部署打包产物（300MB，含模型权重，不入库）
+docker-deploy-gpu.tar.gz
+
+# 前端依赖与构建产物
+frontend-src/node_modules/
+frontend-src/dist/
+frontend-src/.DS_Store

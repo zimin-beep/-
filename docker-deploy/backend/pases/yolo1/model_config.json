@@ -1,0 +1,9 @@
+{
+  "model_path": "/app/pases/yolo1/weights/20260827_174800_corn-disease-best.pt",
+  "conf_thres": 0.25,
+  "iou_thres": 0.7,
+  "rtsp_url": "rtsp://admin:L2801724@192.168.1.79:554/cam/realmonitor?channel=1&subtype=0",
+  "ptz_ip": "192.168.1.79",
+  "ptz_user": "admin",
+  "ptz_pass": "L2801724"
+}

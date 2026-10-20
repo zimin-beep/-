@@ -1,0 +1,53 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: pases-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: "584521"
+      MYSQL_DATABASE: pases
+    volumes:
+      - mysql_data:/var/lib/mysql          # 数据持久化，容器重启不丢
+    command: --default-time-zone='+08:00'  # 与本地时间一致，避免 CONVERT_TZ 8 小时问题
+    ports:
+      - "3307:3306"                        # 宿主机用 3307 访问，避免与本机 MySQL 冲突
+    restart: always
+
+  backend:
+    build: ./backend
+    container_name: pases-backend
+    ports:
+      - "8080:8080"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      # 模型权重挂载：换模型只需替换文件，不用重建镜像
+      - ./backend/weights:/app/pases/yolo1/weights
+      # 配置文件挂载：修改后重启 backend 容器生效
+      - ./backend/model_config.json:/app/pases/yolo1/model_config.json
+      # 图片目录挂载：容器重建后检测记录图片不丢
+      - record_data:/app/pases/yolo1/record/img
+      - upload_data:/app/pases/upload-demo/static/upload
+      - knowledge_data:/app/pases/upload-demo/static/knowledge
+    depends_on:
+      - mysql
+    restart: always
+
+  frontend:
+    build:
+      context: /Users/mac/vscode/en/bingchonghaiguanlixitong   # 前端源码目录
+      dockerfile: /Users/mac/PycharmProjects/en/docker-deploy/frontend/Dockerfile
+    container_name: pases-frontend
+    ports:
+      - "80:80"
+    volumes:
+      # nginx 配置挂载，改配置只需 docker restart pases-frontend
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    restart: always
+
+volumes:
+  mysql_data:
+  record_data:
+  upload_data:
+  knowledge_data:

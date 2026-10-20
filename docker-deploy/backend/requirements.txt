@@ -1,0 +1,9 @@
+flask
+flask-jwt-extended
+waitress
+ultralytics
+pymysql
+pillow
+requests
+schedule
+opencv-python-headless
