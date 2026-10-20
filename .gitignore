@@ -24,3 +24,4 @@ docker-deploy-gpu.tar.gz
 frontend-src/node_modules/
 frontend-src/dist/
 frontend-src/.DS_Store
+dump_err.log
