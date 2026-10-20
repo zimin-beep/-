@@ -1,0 +1,217 @@
+/* ========== 全局重置 ========== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* ========== CSS 变量：统一设计令牌 ========== */
+:root {
+  /* 颜色 */
+  --color-primary: #2d8a4e;
+  --color-primary-dark: #1a6b3a;
+  --color-primary-light: #e8f5e9;
+  --color-secondary: #4158d0;
+  --color-accent: #c850c0;
+  --color-danger: #f56c6c;
+  --color-warning: #e6a23c;
+  --color-success: #67c23a;
+  --color-info: #409eff;
+
+  /* 文字颜色 */
+  --text-primary: #2c3e50;
+  --text-secondary: #606266;
+  --text-placeholder: #909399;
+  --text-disabled: #c0c4cc;
+
+  /* 背景颜色 */
+  --bg-page: #f0f4f8;
+  --bg-card: #ffffff;
+  --bg-hover: #f5f7fa;
+
+  /* 边框颜色 */
+  --border-light: #ebeef5;
+  --border-base: #dcdfe6;
+  --border-dark: #909399;
+
+  /* 字体大小（rem 单位，随屏幕缩放） */
+  --font-xs: 0.75rem;    /* 12px */
+  --font-sm: 0.875rem;   /* 14px */
+  --font-base: 1rem;     /* 16px */
+  --font-lg: 1.125rem;  /* 18px */
+  --font-xl: 1.25rem;   /* 20px */
+  --font-2xl: 1.5rem;   /* 24px */
+  --font-3xl: 1.875rem; /* 30px */
+  --font-4xl: 2.25rem;  /* 36px */
+
+  /* 间距（rem 单位） */
+  --spacing-xs: 0.25rem;   /* 4px */
+  --spacing-sm: 0.5rem;    /* 8px */
+  --spacing-md: 1rem;      /* 16px */
+  --spacing-lg: 1.5rem;    /* 24px */
+  --spacing-xl: 2rem;      /* 32px */
+  --spacing-2xl: 3rem;     /* 48px */
+
+  /* 圆角 */
+  --radius-sm: 0.25rem;   /* 4px */
+  --radius-md: 0.5rem;    /* 8px */
+  --radius-lg: 0.75rem;   /* 12px */
+  --radius-xl: 1rem;      /* 16px */
+  --radius-full: 9999px;
+
+  /* 阴影 */
+  --shadow-sm: 0 0.125rem 0.5rem rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 0.125rem 0.625rem rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 0.25rem 1rem rgba(0, 0, 0, 0.12);
+
+  /* 过渡 */
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.25s ease;
+  --transition-slow: 0.35s ease;
+
+  /* 布局尺寸 */
+  --navbar-height: 4rem;
+  --container-max: 87.5rem;
+  --sidebar-width: 15rem;
+}
+
+/* ========== 基础样式 ========== */
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.6;
+  font-size: var(--font-base);
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+  border: none;
+  background: none;
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* ========== 布局容器 ========== */
+.main-content {
+  padding: clamp(1rem, 2vw, 2rem);
+  max-width: var(--container-max);
+  margin: 0 auto;
+  min-height: calc(100vh - var(--navbar-height));
+}
+
+/* ========== 页面显隐 ========== */
+.page {
+  display: none;
+  width: 100%;
+}
+
+.page.active {
+  display: block;
+}
+
+/* ========== 响应式工具类 ========== */
+
+/* 隐藏/显示工具 */
+.hidden-xs { display: block; }
+.hidden-sm { display: block; }
+.hidden-md { display: block; }
+.hidden-lg { display: block; }
+
+/* 响应式文字大小 */
+.text-responsive {
+  font-size: clamp(0.75rem, 1.5vw, 1.25rem);
+}
+
+.title-responsive {
+  font-size: clamp(1rem, 2.5vw, 2rem);
+}
+
+/* 响应式间距 */
+.padding-responsive {
+  padding: clamp(0.75rem, 2vw, 2rem);
+}
+
+.margin-responsive {
+  margin: clamp(0.5rem, 1.5vw, 1.5rem);
+}
+
+/* 响应式网格 */
+.grid-responsive {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: clamp(0.5rem, 1vw, 1.5rem);
+}
+
+/* 响应式弹性布局 */
+.flex-responsive {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(0.5rem, 1vw, 1rem);
+}
+
+.flex-responsive > * {
+  flex: 1 1 clamp(15rem, 25%, 25rem);
+  min-width: 0;
+}
+
+/* ========== 响应式断点 ========== */
+
+/* 超小屏 (<=480px) */
+@media (max-width: 30rem) {
+  .hidden-xs { display: none !important; }
+}
+
+/* 手机 (<=600px) */
+@media (max-width: 37.5rem) {
+  .hidden-sm { display: none !important; }
+  body { font-size: 0.9375rem; }
+}
+
+/* 平板 (<=900px) */
+@media (max-width: 56.25rem) {
+  .hidden-md { display: none !important; }
+}
+
+/* 大屏 (>=1200px) */
+@media (min-width: 75rem) {
+  .hidden-lg { display: none !important; }
+}
+
+/* 超大屏 (>=1920px) */
+@media (min-width: 120rem) {
+  :root {
+    --container-max: 100rem;
+  }
+}
+
+/* ========== 打印样式 ========== */
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; color: black; }
+}
+
+/* ========== 减少动画（用户偏好） ========== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <link rel="icon" href="/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, minimum-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <meta name="theme-color" content="#2d8a4e">
+    <meta name="description" content="病虫害检测系统 - 智能识别，科学防治">
+    <title>病虫害检测系统</title>
+    <style>
+      /* 响应式基础：动态根字体大小 */
+      html {
+        /* 默认16px，通过JS动态调整 */
+        font-size: 16px;
+        -webkit-text-size-adjust: 100%;
+        -moz-text-size-adjust: 100%;
+        -ms-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        overflow-x: hidden;
+      }
+      /* 安全区域适配（iOS刘海屏等） */
+      .safe-area-bottom {
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      .safe-area-top {
+        padding-top: env(safe-area-inset-top);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+    <script>
+      // 动态根字体大小计算 - 适配不同屏幕尺寸
+      (function() {
+        function setRootFontSize() {
+          // 设计稿基准：1920px 对应 16px
+          // 计算当前屏幕与设计稿的比例
+          var designWidth = 1920;
+          var minFontSize = 12;
+          var maxFontSize = 18;
+
+          var screenWidth = window.innerWidth || document.documentElement.clientWidth;
+
+          // 计算缩放比例：屏幕宽度 / 设计稿宽度 * 基准字体大小
+          var scale = screenWidth / designWidth;
+          var fontSize = scale * 16;
+
+          // 限制最小和最大字体大小，保证可读性
+          fontSize = Math.max(minFontSize, Math.min(maxFontSize, fontSize));
+
+          document.documentElement.style.fontSize = fontSize + 'px';
+        }
+
+        // 初始设置
+        setRootFontSize();
+
+        // 监听窗口大小变化
+        var resizeTimer;
+        window.addEventListener('resize', function() {
+          clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(setRootFontSize, 100);
+        });
+
+        // 监听屏幕方向变化
+        window.addEventListener('orientationchange', function() {
+          setTimeout(setRootFontSize, 300);
+        });
+
+        // 监听字体大小变化（用户调整系统字体）
+        if (window.matchMedia) {
+          var mql = window.matchMedia('(min-width: 3840px)');
+          if (mql.addEventListener) {
+            mql.addEventListener('change', setRootFontSize);
+          } else if (mql.addListener) {
+            mql.addListener(setRootFontSize);
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>
